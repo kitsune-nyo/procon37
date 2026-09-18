@@ -1,5 +1,4 @@
 #include <bits/stdc++.h>
-#include <ostream>
 
 enum class Terrain : int {
     PLAIN    = 0,
@@ -14,9 +13,17 @@ enum class RoadStatus : int {
     JAMMED    = 2
 };
 
-struct MoveCost {
+class MoveCost {
+public:
     int time;
     int fuel;
+
+    MoveCost operator +(const MoveCost& r) const {
+        MoveCost ret;
+        ret.fuel = fuel + r.fuel;
+        ret.time = time + r.time;
+        return ret;
+    }
 };
 
 inline MoveCost getMoveCost(Terrain terrain, RoadStatus road = RoadStatus::SMOOTH) {
@@ -190,7 +197,7 @@ class SpotManager {
 public:
     std::vector<Spot> spots;
 
-    void placeSpots(const Map& map, int spotCount, int brandCount,
+    void placeSpotsRandomly(const Map& map, int spotCount, int brandCount,
                      int agentCount, int maxStockCap, unsigned seed = 42) {
         if (spotCount < agentCount)
             throw std::runtime_error("スポット数はエージェント数以上である必要があります");
@@ -261,12 +268,12 @@ public:
     std::vector<Agent> agents;
     int count, fuel;
 
-    void randomPlaceAgents(Map& map, SpotManager spotMgr, int cnt, int f, unsigned seed = 42) {
+    void placeAgentsRandomly(Map& map, SpotManager spotMgr, int cnt, int f, unsigned seed = 42) {
         std::vector<int> plainCells;
         for (int i = 0; i < map.width * map.height; ++i) {
             if (map.terrainAt(i) == Terrain::PLAIN) plainCells.push_back(i);
         }
-        if ((int)plainCells.size() > count) throw std::runtime_error("平地セルが不足しています");
+        if ((int)plainCells.size() < cnt) throw std::runtime_error("平地セルが不足しています");
 
         std::mt19937 rng(seed);
         std::shuffle(plainCells.begin(), plainCells.end(), rng);
@@ -300,11 +307,55 @@ public:
         for (int s = 0; s < count; s++) {
             if (agents[s].isPatrol()) continue;
             for (int p = 0; p < count; p++) {
-                if (!agents[s].isPatrol()) continue;
-                if (agents[s].pos == agents[p].pos) agents[s].fuel = fuel;
+                if (!agents[p].isPatrol()) continue;
+                if (agents[s].pos == agents[p].pos) agents[p].fuel = fuel;
             }
         }
     }
+};
+
+struct ReverseDijkstraResult {
+    std::vector<int> dist;
+    std::vector<int> parent;
+};
+
+ReverseDijkstraResult reverseDijkstra(Map& map, int goal) {
+    std::vector<int> dist(map.width * map.height, 9999999);
+    std::vector<int> parent(map.width * map.height, -1);
+    
+    using pint = std::pair<int, int>;
+    std::priority_queue<pint, std::vector<pint>, std::greater<pint>> search;
+
+    dist[goal] = 0;
+    search.push({0, goal});
+
+    while (!search.empty()) {
+        int d = search.top().first, p = search.top().second;
+        search.pop();
+
+        if (d != dist[p]) continue;
+        std::vector move = getAllNeighbors(map, p);
+
+        for (int m = 0; m < move.size(); m++) {
+            int next = move[m];
+            if (map.terrainAt(next) == Terrain::POND) continue;
+            int time = getMoveCost(map.terrainAt(next), map.roadStat[next]).time;
+            int newDist = d + time;
+            if (newDist < dist[next]) {
+                dist[next] = newDist;
+                parent[next] = p;
+                search.push({newDist, next});
+            }
+        }
+    }
+
+    return {dist, parent};
+}
+
+struct State {
+    std::vector<Spot> spots;
+    std::vector<Agent> agents;
+    int step, score;
 };
 
 int main() {
@@ -327,7 +378,7 @@ int main() {
     SpotManager spotMgr;
     int agentCount = 4;
     int fuelLimit = 20;
-    spotMgr.placeSpots(map, 6, 3, agentCount, agentCount);
+    spotMgr.placeSpotsRandomly(map, 6, 3, agentCount, agentCount);
     std::cout << "[OK] スポット配置数: " << spotMgr.spots.size() << "\n";
     for (auto& s : spotMgr.spots) {
         std::cout << "  spot pos=" << s.pos << " brand=" << s.brand
@@ -336,7 +387,7 @@ int main() {
 
     // ===AGENTS===
     AgentManager agentMgr;
-    agentMgr.randomPlaceAgents(map, spotMgr, agentCount, fuelLimit);
+    agentMgr.placeAgentsRandomly(map, spotMgr, agentCount, fuelLimit);
     agentMgr.assignKinds({AgentKind::PATROL, AgentKind::SUPPLY,
                           AgentKind::PATROL, AgentKind::PATROL});
     std::cout << "[OK] エージェント配置完了\n";
@@ -346,7 +397,9 @@ int main() {
                   << " fuel=" << a.fuel << "\n";
     }
 
+/*
     // ===SAMPLE====
+    #pragma region 
     Agent& car = agentMgr.agents[0];
     Direction dir = Direction::E;
     auto attempt = tryMove(map, car.pos, dir, car.fuel, 10, car.isPatrol());
@@ -373,6 +426,18 @@ int main() {
     agentMgr.agents[1].pos = car.pos;
     agentMgr.applySupply();
     std::cout << "[OK] 補給後の巡回車燃料: " << car.fuel << "\n";
+    #pragma endregion
+*/
+
+    // ===SEARCH===
+    ReverseDijkstraResult c = reverseDijkstra(map, 0);
+    for (int i = 0; i < map.height; i++) {
+        for (int j = 0; j < map.width; j++) {
+            if (j > 0) std::cout << " ";
+            std::cout << c.dist[map.indexOf(i, j)];
+        }
+        std::cout << std::endl;
+    }
 
     return 0;
 }
