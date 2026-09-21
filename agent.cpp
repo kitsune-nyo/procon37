@@ -12,15 +12,7 @@ struct Agent {
 class AgentManager {
 public:
     std::vector<Agent> agents;
-    int count, fuel, patrolNum, supplyNum;
-
-    void init(int f) {
-        agents.clear();
-        count = 0;
-        fuel = f;
-        patrolNum = 0;
-        supplyNum = 0;
-    }
+    int count = 0, fuel = 0, patrolNum = 0, supplyNum = 0;
 
     void placeAgentsRandomly(Map& map, int cnt, int f, unsigned seed = 42) {
         std::vector<int> plainCells;

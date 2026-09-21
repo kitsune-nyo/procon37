@@ -1,5 +1,4 @@
 #include <stdexcept>
-#include <vector>
 #include <queue>
 #include <optional>
 
@@ -59,9 +58,12 @@ public:
     std::vector<Terrain> cells;
     std::vector<RoadStatus> roadStat;
 
-    Map(int w, int h, const std::vector<std::vector<int>>& grid)
-        : width(w), height(h), cells(w * h), roadStat(w * h, RoadStatus::SMOOTH)
+    void init(int w, int h, std::vector<std::vector<int>> grid)
     {
+        width = w;
+        height = h;
+        for (int i = 0; i < w * h; i++) cells.push_back(Terrain::PLAIN);
+        for (int i = 0; i < w * h; i++) roadStat.push_back(RoadStatus::SMOOTH);
         if ((int)grid.size() != h) throw std::runtime_error("マップの行数が height と一致しません");
         for (int r = 0; r < h; ++r) {
             if ((int)grid[r].size() != w) throw std::runtime_error("マップの列数が width と一致しません");

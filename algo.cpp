@@ -39,35 +39,48 @@ ReverseDijkstraResult reverseDijkstra(Map& map, int goal) {
 }
 
 class State {
-    std::vector<Spot> spots;
-    std::vector<Agent> agents;
-    int step, udonBrandSum, udonSum, fuelSum;
-/*
-    double evaluate(Map& map, AgentManager& agentMgr) {
-        if (!isValid()) return -1e18;
-        const double weight[4] = {1.0, 1.0, 1.0, -1.0};
-        return 
+public:
+    Map *map;
+    SpotManager spotMgr;
+    AgentManager agentMgr;
+    int step = 0, udonBrandSum = 0, udonSum = 0, fuelSum = 0;
+    double score = 0;
+
+    bool operator>(const State& r) const {
+        if (step != r.step) return step > r.step;
+        return score > r.score;
     }
 
-    bool isValid() {
-
+    State(Map& m, SpotManager& s, AgentManager a) {
+        map = &m;
+        spotMgr = s;
+        agentMgr = a;
     }
-*/
+
+    void evaluate() {}
+    void update() { step++; }
 };
 
 int main() {
+    // ===GENERAL===
+    int agentCount = 4;
+    int fuelLimit = 20;
+    int steps = 50;
+
     // ===MAP===
-    std::vector<std::vector<int>> sampleMapData = {
-        {0, 0, 2, 0, 0, 0, 0, 0},
-        {0, 3, 3, 0, 2, 2, 0, 0},
-        {0, 0, 3, 0, 0, 2, 0, 1},
-        {1, 1, 1, 1, 1, 1, 1, 0},
-        {0, 0, 2, 0, 0, 3, 0, 0},
-        {0, 2, 0, 0, 0, 3, 3, 0},
-        {0, 0, 0, 1, 1, 1, 1, 0},
-        {0, 0, 0, 0, 0, 0, 0, 0},
-    };
-    Map map(8, 8, sampleMapData);
+    Map map;
+    map.init(8, 8,
+        {
+            {0, 0, 2, 0, 0, 0, 0, 0},
+            {0, 3, 3, 0, 2, 2, 0, 0},
+            {0, 0, 3, 0, 0, 2, 0, 1},
+            {1, 1, 1, 1, 1, 1, 1, 0},
+            {0, 0, 2, 0, 0, 3, 0, 0},
+            {0, 2, 0, 0, 0, 3, 3, 0},
+            {0, 0, 0, 1, 1, 1, 1, 0},
+            {0, 0, 0, 0, 0, 0, 0, 0},
+        }
+    );
 
     // ===SPOTS===
     SpotManager spotMgr;
@@ -78,9 +91,7 @@ int main() {
 
     // ===AGENTS===
     AgentManager agentMgr;
-    int agentCount = 4;
-    int fuelLimit = 20;
-    agentMgr.init(fuelLimit);
+    agentMgr.fuel = fuelLimit;
     agentMgr.placeAgent(15);
     agentMgr.placeAgent(32);
     agentMgr.placeAgent(1);
@@ -88,6 +99,23 @@ int main() {
     agentMgr.assignKinds({AgentKind::PATROL, AgentKind::SUPPLY, AgentKind::PATROL, AgentKind::PATROL});
 
     // ===SEARCH===
+
+    int beamWidth = 200;
+    std::priority_queue<State, std::vector<State>, std::greater<State>> states;
+    State init(map, spotMgr, agentMgr);
+    states.push(init);
+    for (int s = 1; s <= steps; s++) {
+        while (states.top().step != s) {
+            State state = states.top();
+            state.update();
+            state.evaluate();
+            states.pop();
+            states.push(state);
+        }
+        while (states.size() > beamWidth) states.pop();
+    }
+    while (states.size() != 1) states.pop();
+    State answer = states.top();
 
     return 0;
 }
