@@ -1,6 +1,5 @@
 #include <stdexcept>
-#include <queue>
-#include <optional>
+#include <vector>
 
 enum class Terrain : int {
     PLAIN    = 0,
@@ -15,18 +14,7 @@ enum class RoadStatus {
     JAMMED    = 2
 };
 
-class MoveCost {
-public:
-    int time;
-    int fuel;
-
-    MoveCost operator +(const MoveCost& r) const {
-        MoveCost ret;
-        ret.fuel = fuel + r.fuel;
-        ret.time = time + r.time;
-        return ret;
-    }
-};
+struct MoveCost { int time, fuel; };
 
 inline MoveCost getMoveCost(Terrain terrain, RoadStatus road = RoadStatus::SMOOTH) {
     switch (terrain) {
@@ -47,9 +35,14 @@ inline MoveCost getMoveCost(Terrain terrain, RoadStatus road = RoadStatus::SMOOT
     }
 }
 
-inline bool isPassable(Terrain t) {
-    return t != Terrain::POND;
-}
+enum class Direction : int { NW = 0, NE = 1, E = 2, SE = 3, SW = 4, W = 5 };
+
+inline const int DIR_TABLE[2][6][2] = {
+    // 偶数行 (r % 2 == 0)
+    { {-1, -1}, {-1, 0}, {0, 1}, {1, -1}, {1, 0}, {0, -1}, },
+    // 奇数行 (r % 2 == 1)
+    { {-1, 0}, {-1, 1}, {0, 1}, {1, 0}, {1, 1}, {0, -1}, }
+};
 
 class Map {
 public:
@@ -58,12 +51,12 @@ public:
     std::vector<Terrain> cells;
     std::vector<RoadStatus> roadStat;
 
-    void init(int w, int h, std::vector<std::vector<int>> grid)
+    void init(int w, int h, const std::vector<std::vector<int>>& grid)
     {
         width = w;
         height = h;
-        for (int i = 0; i < w * h; i++) cells.push_back(Terrain::PLAIN);
-        for (int i = 0; i < w * h; i++) roadStat.push_back(RoadStatus::SMOOTH);
+        cells.assign(w * h, Terrain::PLAIN);
+        roadStat.assign(w * h, RoadStatus::SMOOTH);
         if ((int)grid.size() != h) throw std::runtime_error("マップの行数が height と一致しません");
         for (int r = 0; r < h; ++r) {
             if ((int)grid[r].size() != w) throw std::runtime_error("マップの列数が width と一致しません");
@@ -83,110 +76,36 @@ public:
     inline int colOf(int idx) const { return idx % width; }
 
     Terrain terrainAt(int idx) const { return cells[idx]; }
-};
+    RoadStatus roadStatAt(int idx) const { return roadStat[idx]; }
 
-enum class Direction : int { NW = 0, NE = 1, E = 2, SE = 3, SW = 4, W = 5 };
-
-inline const int DIR_TABLE[2][6][2] = {
-    // 偶数行 (r % 2 == 0)
-    {
-        {-1, -1}, {-1, 0}, {0, 1}, {1, -1}, {1, 0}, {0, -1},
-    },
-    // 奇数行 (r % 2 == 1)
-    {
-        {-1, 0}, {-1, 1}, {0, 1}, {1, 0}, {1, 1}, {0, -1},
+    int getDirection(int pos, int next) {
+        int r = rowOf(pos);
+        int c = colOf(pos);
+        for (int d = 0; d < 6; d++) {
+            int nr = r + DIR_TABLE[r % 2][d][0];
+            int nc = c + DIR_TABLE[r % 2][d][1];
+            if (nr == rowOf(next) && nc == colOf(next)) return d;
+        }
+        return -1;
     }
 };
 
-inline std::optional<int> getNeighbor(const Map& map, int idx, Direction dir) {
+inline int getNeighbor(const Map& map, int idx, Direction dir) {
     int r = map.rowOf(idx);
     int c = map.colOf(idx);
     int parity = r % 2;
     int dr = DIR_TABLE[parity][(int)dir][0];
     int dc = DIR_TABLE[parity][(int)dir][1];
     int nidx = map.indexOf(r + dr, c + dc);
-    if (nidx < 0) return std::nullopt;
+    if (nidx < 0) return -1;
     return nidx;
 }
 
 inline std::vector<int> getAllNeighbors(const Map& map, int idx) {
     std::vector<int> result;
     for (int d = 0; d < 6; ++d) {
-        auto n = getNeighbor(map, idx, static_cast<Direction>(d));
-        if (n.has_value()) result.push_back(n.value());
+        int n = getNeighbor(map, idx, static_cast<Direction>(d));
+        if (n != -1) result.push_back(n);
     }
     return result;
-}
-
-inline bool checkMapConnectivity(const Map& map) {
-    int total = map.width * map.height;
-    std::vector<bool> visited(total, false);
-    int start = -1;
-    for (int i = 0; i < total; ++i) {
-        if (isPassable(map.terrainAt(i))) { start = i; break; }
-    }
-    if (start == -1) return false;
-
-    std::queue<int> q;
-    q.push(start);
-    visited[start] = true;
-    int visitedCount = 1;
-
-    while (!q.empty()) {
-        int cur = q.front(); q.pop();
-        for (int nb : getAllNeighbors(map, cur)) {
-            if (!isPassable(map.terrainAt(nb))) continue;
-            if (visited[nb]) continue;
-            visited[nb] = true;
-            visitedCount++;
-            q.push(nb);
-        }
-    }
-
-    int passableTotal = 0;
-    for (int i = 0; i < total; ++i) if (isPassable(map.terrainAt(i))) passableTotal++;
-
-    return visitedCount == passableTotal;
-}
-
-enum class MoveResult { OK, OUT_OF_RANGE, BLOCKED_POND, NOT_ENOUGH_FUEL, NOT_ENOUGH_STEP };
-
-struct MoveAttempt {
-    MoveResult result;
-    int nextPos = -1;
-    MoveCost cost{0, 0};
-};
-
-inline MoveAttempt tryMove(const Map& map, int currentPos, Direction dir,
-                           int availableFuel, int availableSteps, bool isPatrolCar) {
-    MoveAttempt attempt;
-
-    auto next = getNeighbor(map, currentPos, dir);
-    if (!next.has_value()) {
-        attempt.result = MoveResult::OUT_OF_RANGE;
-        return attempt;
-    }
-    Terrain nextTerrain = map.terrainAt(next.value());
-    if (!isPassable(nextTerrain)) {
-        attempt.result = MoveResult::BLOCKED_POND;
-        return attempt;
-    }
-
-    Terrain curTerrain = map.terrainAt(currentPos);
-    RoadStatus curRoad = map.roadStat[currentPos];
-    MoveCost cost = getMoveCost(curTerrain, curRoad);
-
-    if (isPatrolCar && availableFuel < cost.fuel) {
-        attempt.result = MoveResult::NOT_ENOUGH_FUEL;
-        return attempt;
-    }
-    if (availableSteps < cost.time) {
-        attempt.result = MoveResult::NOT_ENOUGH_STEP;
-        return attempt;
-    }
-
-    attempt.result = MoveResult::OK;
-    attempt.nextPos = next.value();
-    attempt.cost = cost;
-    return attempt;
 }

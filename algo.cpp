@@ -1,4 +1,7 @@
+#include "map.cpp"
+#include "spot.cpp"
 #include "agent.cpp"
+#include <iostream>
 
 struct ReverseDijkstraResult {
     std::vector<int> dist;
@@ -43,6 +46,7 @@ public:
     Map *map;
     SpotManager spotMgr;
     AgentManager agentMgr;
+
     int step = 0, udonBrandSum = 0, udonSum = 0, fuelSum = 0;
     double score = 0;
 
@@ -58,8 +62,55 @@ public:
     }
 
     void evaluate() {}
-    void update() { step++; }
+
+    void update() {
+        for (Agent& agent: agentMgr.agents) {
+            if (agent.actions.empty()) {
+                if (agent.kind == AgentKind::PATROL) {
+                    // 補給車の本流・分流、スポットの本流・分流、待機
+                } else {
+                    // 巡回車の本流・分流、待機
+                }
+                // 日の最後は行動しない
+                agent.actions.push(agent.pos + map->width);
+                agent.actions.push(agent.pos);
+            }
+            if (agent.history.size() < step + 1) agent.history.push_back(9999999);
+            if (step == 0 || agent.history[step] != -1) {
+                int action = agent.actions.front();
+                MoveCost cost = getMoveCost(map->terrainAt(agent.pos), map->roadStatAt(agent.pos));
+                agent.history[step] = map->getDirection(agent.pos, action);
+                agent.pos = action;
+                agent.fuel -= cost.fuel;
+                for (int i = 0; i < cost.time; i++) agent.history.push_back(-1); 
+                agent.actions.pop();
+            }
+        }
+        agentMgr.applySupply();
+        // うどん確保の処理
+
+        step++;
+    }
 };
+
+std::vector<int> compressMinus(std::vector<int>& v) {
+    std::vector<int> ret;
+
+    int sum = 0;
+    for (int e: v) {
+        if (e < 0) sum += e;
+        else {
+            if (sum < 0) {
+                ret.push_back(sum);
+                sum = 0;
+            }
+            ret.push_back(e);
+        }
+    }
+    if (sum < 0) ret.push_back(sum);
+
+    return ret;
+}
 
 int main() {
     // ===GENERAL===
@@ -114,8 +165,18 @@ int main() {
         }
         while (states.size() > beamWidth) states.pop();
     }
-    while (states.size() != 1) states.pop();
-    State answer = states.top();
+    while (states.size() > 1) states.pop();
+    State bestState = states.top();
+
+    for (Agent& agent: bestState.agentMgr.agents) {
+        std::cout << "=== エージェント ===" << std::endl;
+        std::vector<int> answer = compressMinus(agent.history);
+        for (int i = 0; i < answer.size(); i++) {
+            if (i > 0) std::cout << " ";
+            std::cout << answer[i];
+        }
+        std::cout << "\n\n";
+    }
 
     return 0;
 }
