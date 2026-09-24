@@ -33,14 +33,4 @@ public:
             }
         }
     }
-
-    void applySupply() {
-        for (int s = 0; s < agents.size(); s++) {
-            if (agents[s].kind == AgentKind::PATROL) continue;
-            for (int p = 0; p < agents.size(); p++) {
-                if (agents[p].kind == AgentKind::SUPPLY) continue;
-                if (agents[s].pos == agents[p].pos) agents[p].fuel = fuel;
-            }
-        }
-    }
 };
