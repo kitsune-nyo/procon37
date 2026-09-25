@@ -1,48 +1,10 @@
 #include <iostream>
-#include <climits>
+#include <queue>
 #include <set>
 
 #include "map.cpp"
 #include "spot.cpp"
 #include "agent.cpp"
-
-struct ReverseDijkstraResult {
-    std::vector<int> dist;
-    std::vector<int> parent;
-};
-
-ReverseDijkstraResult reverseDijkstra(Map& map, int goal) {
-    std::vector<int> dist(map.width * map.height, INT_MAX);
-    std::vector<int> parent(map.width * map.height, -1);
-    
-    using pint = std::pair<int, int>;
-    std::priority_queue<pint, std::vector<pint>, std::greater<pint>> search;
-
-    dist[goal] = 0;
-    search.push({0, goal});
-
-    while (!search.empty()) {
-        int d = search.top().first, p = search.top().second;
-        search.pop();
-
-        if (d != dist[p]) continue;
-        std::vector move = getAllNeighbors(map, p);
-
-        for (int m = 0; m < move.size(); m++) {
-            int next = move[m];
-            if (map.terrainAt(next) == Terrain::POND) continue;
-            int time = getMoveCost(map.terrainAt(next), map.roadStat[next]).time;
-            int newDist = d + time;
-            if (newDist < dist[next]) {
-                dist[next] = newDist;
-                parent[next] = p;
-                search.push({newDist, next});
-            }
-        }
-    }
-
-    return {dist, parent};
-}
 
 class State {
 public:
@@ -97,50 +59,80 @@ public:
             }
         }
     }
+};
 
-    void evaluate() {
-        score = 0;
-        std::vector<int> x = {
-            (int)udonBrand.size(), 
-            udonSum,
-            fuelSum()
-        };
-        std::vector<int> w = {
-            1000, 
-            100,
-            1
-        };
-        for (int i = 0; i < x.size(); i++) score += w[i] * x[i];
-    }
+void evaluate(State& state) {
+    state.score = 0;
+    std::vector<int> x = {
+        (int)state.udonBrand.size(), 
+        state.udonSum,
+        state.fuelSum()
+    };
+    std::vector<int> w = {
+        1000, 
+        100,
+        1
+    };
+    for (int i = 0; i < x.size(); i++) state.score += w[i] * x[i];
+}
 
-    void update(Map& map) {
-        for (Agent& agent: agentMgr.agents) {
-            if (agent.actions.empty()) {
-                if (agent.kind == AgentKind::PATROL) {
-                    // 補給車の本流・分流、スポットの本流・分流、待機
-                } else {
-                    // 巡回車の本流・分流、スポットの本流・分流、待機
-                }
-                // 日の最後は行動しない
-                agent.actions.push(agent.pos + map.width);
-                agent.actions.push(agent.pos);
+std::vector<State> separate(State& state) {
+    std::vector<State> ret;
+
+    for (int i = 0; i < state.agentMgr.agents.size(); i++) {
+        if (state.agentMgr.agents[i].actions.empty()) {
+            State s = state;
+            Agent& agent = s.agentMgr.agents[i];
+            std::vector<std::vector<int>> actions;
+            if (agent.kind == AgentKind::PATROL) {
+                actions.push_back({-1});
+                // 補給車の本流・分流、スポットの本流・分流
+            } else {
+                actions.push_back({-1});
+                // 巡回車の本流・分流、スポットの本流・分流
             }
-            if (agent.history.size() < step + 1) agent.history.push_back(-1);
-            if (step == 0 || agent.history[step] != INT_MIN) {
-                int action = agent.actions.front();
-                MoveCost cost = getMoveCost(map.terrainAt(agent.pos), map.roadStatAt(agent.pos));
-                agent.history[step] = map.getDirection(agent.pos, action);
-                agent.pos = action;
-                agent.fuel -= cost.fuel;
-                for (int i = 1; i < cost.time; i++) agent.history.push_back(-1); 
-                agent.actions.pop();
+            std::queue<int>& newAction = agent.actions;
+            for (std::vector<int>& action: actions) {
+                while (!newAction.empty()) newAction.pop();
+                for (int& a: action) newAction.push(a);
+                ret.push_back(s);
             }
         }
-        applySupply();
-        collectUdon();
-        step++;
     }
-};
+
+    return ret;
+}
+
+bool update(State& state, Map& map, int steps) {
+    for (int i = 0; i < state.agentMgr.agents.size(); i++) {
+        if (state.agentMgr.agents[i].actions.empty()) return false;
+    }
+
+    for (int i = 0; i < state.agentMgr.agents.size(); i++) {
+        Agent& current = state.agentMgr.agents[i];
+        if (current.history.size() < state.step + 1) current.history.push_back(-1);
+        int action = current.actions.front();
+        if (action == -1) {
+            current.history[state.step] = -1;
+            current.actions.pop();
+            continue;
+        }
+        if (state.step == 0 || current.history[state.step] != INT_MIN) {
+            MoveCost cost = getMoveCost(map.terrainAt(current.pos), map.roadStatAt(current.pos));
+            if (steps - state.step < cost.time) current.history[state.step] = state.step - steps;
+            else current.history[state.step] = map.getDirection(current.pos, action);
+            current.pos = action;
+            current.fuel -= cost.fuel;
+            for (int i = 1; i < cost.time; i++) current.history.push_back(INT_MIN); 
+            current.actions.pop();
+        }
+    }
+    state.applySupply();
+    state.collectUdon();
+    state.step++;
+
+    return true;
+}
 
 std::vector<int> compress(std::vector<int>& v) {
     std::vector<int> ret;
@@ -167,22 +159,63 @@ int main() {
     // ===GENERAL===
     int agentCount = 4;
     int fuelLimit = 20;
-    int steps = 50;
+    int steps = 10;
 
     // ===MAP===
     Map map;
-    map.init(8, 8,
+    map.init(32, 32,
         {
-            {0, 0, 2, 0, 0, 0, 0, 0},
-            {0, 3, 3, 0, 2, 2, 0, 0},
-            {0, 0, 3, 0, 0, 2, 0, 1},
-            {1, 1, 1, 1, 1, 1, 1, 0},
-            {0, 0, 2, 0, 0, 3, 0, 0},
-            {0, 2, 0, 0, 0, 3, 3, 0},
-            {0, 0, 0, 1, 1, 1, 1, 0},
-            {0, 0, 0, 0, 0, 0, 0, 0},
+            {0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0},
+            {0, 3, 3, 0, 2, 2, 0, 0, 0, 3, 3, 0, 2, 2, 0, 0, 0, 3, 3, 0, 2, 2, 0, 0, 0, 3, 3, 0, 2, 2, 0, 0},
+            {0, 0, 3, 0, 0, 2, 0, 1, 0, 0, 3, 0, 0, 2, 0, 1, 0, 0, 3, 0, 0, 2, 0, 1, 0, 0, 3, 0, 0, 2, 0, 1},
+            {1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0},
+            {0, 0, 2, 0, 0, 3, 0, 0, 0, 0, 2, 0, 0, 3, 0, 0, 0, 0, 2, 0, 0, 3, 0, 0, 0, 0, 2, 0, 0, 3, 0, 0},
+            {0, 2, 0, 0, 0, 3, 3, 0, 0, 2, 0, 0, 0, 3, 3, 0, 0, 2, 0, 0, 0, 3, 3, 0, 0, 2, 0, 0, 0, 3, 3, 0},
+            {0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0},
+            {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+            {0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0},
+            {0, 3, 3, 0, 2, 2, 0, 0, 0, 3, 3, 0, 2, 2, 0, 0, 0, 3, 3, 0, 2, 2, 0, 0, 0, 3, 3, 0, 2, 2, 0, 0},
+            {0, 0, 3, 0, 0, 2, 0, 1, 0, 0, 3, 0, 0, 2, 0, 1, 0, 0, 3, 0, 0, 2, 0, 1, 0, 0, 3, 0, 0, 2, 0, 1},
+            {1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0},
+            {0, 0, 2, 0, 0, 3, 0, 0, 0, 0, 2, 0, 0, 3, 0, 0, 0, 0, 2, 0, 0, 3, 0, 0, 0, 0, 2, 0, 0, 3, 0, 0},
+            {0, 2, 0, 0, 0, 3, 3, 0, 0, 2, 0, 0, 0, 3, 3, 0, 0, 2, 0, 0, 0, 3, 3, 0, 0, 2, 0, 0, 0, 3, 3, 0},
+            {0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0},
+            {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+            {0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0},
+            {0, 3, 3, 0, 2, 2, 0, 0, 0, 3, 3, 0, 2, 2, 0, 0, 0, 3, 3, 0, 2, 2, 0, 0, 0, 3, 3, 0, 2, 2, 0, 0},
+            {0, 0, 3, 0, 0, 2, 0, 1, 0, 0, 3, 0, 0, 2, 0, 1, 0, 0, 3, 0, 0, 2, 0, 1, 0, 0, 3, 0, 0, 2, 0, 1},
+            {1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0},
+            {0, 0, 2, 0, 0, 3, 0, 0, 0, 0, 2, 0, 0, 3, 0, 0, 0, 0, 2, 0, 0, 3, 0, 0, 0, 0, 2, 0, 0, 3, 0, 0},
+            {0, 2, 0, 0, 0, 3, 3, 0, 0, 2, 0, 0, 0, 3, 3, 0, 0, 2, 0, 0, 0, 3, 3, 0, 0, 2, 0, 0, 0, 3, 3, 0},
+            {0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0},
+            {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+            {0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0},
+            {0, 3, 3, 0, 2, 2, 0, 0, 0, 3, 3, 0, 2, 2, 0, 0, 0, 3, 3, 0, 2, 2, 0, 0, 0, 3, 3, 0, 2, 2, 0, 0},
+            {0, 0, 3, 0, 0, 2, 0, 1, 0, 0, 3, 0, 0, 2, 0, 1, 0, 0, 3, 0, 0, 2, 0, 1, 0, 0, 3, 0, 0, 2, 0, 1},
+            {1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0},
+            {0, 0, 2, 0, 0, 3, 0, 0, 0, 0, 2, 0, 0, 3, 0, 0, 0, 0, 2, 0, 0, 3, 0, 0, 0, 0, 2, 0, 0, 3, 0, 0},
+            {0, 2, 0, 0, 0, 3, 3, 0, 0, 2, 0, 0, 0, 3, 3, 0, 0, 2, 0, 0, 0, 3, 3, 0, 0, 2, 0, 0, 0, 3, 3, 0},
+            {0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0},
+            {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
         }
     );
+    map.setRoadStatus(96, RoadStatus::JAMMED);
+    
+    std::vector<ReverseDijkstraResult> mapDijkstra;
+    for (int i = 0; i < map.cells.size(); i++) mapDijkstra.push_back(reverseDijkstra(map, i));
+    std::vector<ReverseDijkstraResult> dropDijkstra;
+    for (int i = 0; i < map.cells.size(); i++) {
+        if (map.cells[i] != Terrain::POND) {
+            Terrain tmp = map.cells[i];
+            map.cells[i] = Terrain::POND;
+            mapDijkstra.push_back(reverseDijkstra(map, i));
+            map.cells[i] = tmp;
+        } else {
+            std::vector<MoveCost> a;
+            std::vector<int> b;
+            mapDijkstra.push_back({a, b});
+        }
+    }
 
     // ===SPOTS===
     SpotManager spotMgr;
@@ -207,12 +240,15 @@ int main() {
     State init(spotMgr, agentMgr);
     states.push(init);
     for (int s = 1; s <= steps; s++) {
-        while (states.top().step != s) {
+        while (!states.empty() && states.top().step < s) {
             State state = states.top();
-            state.update(map);
-            state.evaluate();
             states.pop();
-            states.push(state);
+            std::vector<State> newStates = separate(state);
+            if (update(state, map, steps)) states.push(state);
+            for (State& next : newStates) {
+                evaluate(next);
+                states.push(next);
+            }
         }
         while (states.size() > beamWidth) states.pop();
     }

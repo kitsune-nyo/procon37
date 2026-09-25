@@ -1,5 +1,7 @@
 #include <stdexcept>
+#include <climits>
 #include <vector>
+#include <queue>
 
 enum class Terrain : int {
     PLAIN    = 0,
@@ -14,7 +16,20 @@ enum class RoadStatus {
     JAMMED    = 2
 };
 
-struct MoveCost { int time, fuel; };
+class MoveCost {
+public:
+    int time, fuel;
+    bool operator!=(const MoveCost& r) const { return !((time == r.time) && (fuel == r.fuel)); }
+    bool operator>(const MoveCost& r) const {
+        if (time != r.time) return time > r.time;
+        return fuel > r.fuel;
+    }
+    bool operator<(const MoveCost& r) const {
+        if (time != r.time) return time < r.time;
+        return fuel < r.fuel;
+    }
+    MoveCost operator+(const MoveCost& r) const { return {time + r.time, fuel + r.fuel}; }
+};
 
 inline MoveCost getMoveCost(Terrain terrain, RoadStatus road = RoadStatus::SMOOTH) {
     switch (terrain) {
@@ -68,6 +83,8 @@ public:
         }
     }
 
+    void setRoadStatus(int pos, RoadStatus road) { roadStat[pos] = road; }
+
     inline int indexOf(int r, int c) const {
         if (r < 0 || r >= height || c < 0 || c >= width) return -1;
         return r * width + c;
@@ -108,4 +125,57 @@ inline std::vector<int> getAllNeighbors(const Map& map, int idx) {
         if (n != -1) result.push_back(n);
     }
     return result;
+}
+
+struct ReverseDijkstraResult {
+    std::vector<MoveCost> dist;
+    std::vector<int> parent;
+};
+
+ReverseDijkstraResult reverseDijkstra(Map& map, int goal) {
+    std::vector<MoveCost> dist(map.width * map.height, {INT_MAX, INT_MAX});
+    std::vector<int> parent(map.width * map.height, -1);
+    
+    using p = std::pair<MoveCost, int>;
+    std::priority_queue<p, std::vector<p>, std::greater<p>> search;
+
+    dist[goal] = {0, 0};
+    search.push({{0, 0}, goal});
+
+    while (!search.empty()) {
+        MoveCost d = search.top().first;
+        int p = search.top().second;
+        search.pop();
+
+        if (d != dist[p]) continue;
+        std::vector move = getAllNeighbors(map, p);
+
+        for (int m = 0; m < move.size(); m++) {
+            int next = move[m];
+            if (map.terrainAt(next) == Terrain::POND) continue;
+            MoveCost cost = getMoveCost(map.terrainAt(next), map.roadStat[next]);
+            MoveCost newDist = d + cost;
+            if (newDist.time < dist[next].time) {
+                dist[next] = newDist;
+                parent[next] = p;
+                search.push({newDist, next});
+            }
+        }
+    }
+
+    return {dist, parent};
+}
+
+std::vector<int> getPath(std::vector<int>& v, int start, int goal) {
+    std::vector<int> ret;
+
+    int current = start;
+    while (current != INT_MAX) {
+        ret.push_back(current);
+        if (current == goal) break;
+        current = v[current];
+    }
+
+    if (ret.back() != goal) return {};
+    return ret;
 }
