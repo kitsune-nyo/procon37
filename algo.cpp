@@ -105,7 +105,7 @@ int main() {
 
     // ===SEARCH===
 
-    int beamWidth = 200;
+    int beamWidth = 400;
     std::priority_queue<State, std::vector<State>, std::greater<State>> states;
     State init(spotMgr, agentMgr);
     states.push(init);

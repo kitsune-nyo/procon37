@@ -76,8 +76,8 @@ void evaluate(
     std::vector<double> x = {
         (double)state.udonBrand.size(), 
         (double)state.udonSum,
-        agentsToNearestSpotScore,
-        fuel
+        fuel,
+        agentsToNearestSpotScore
     };
     std::vector<double> w = {
         1000,
@@ -108,6 +108,7 @@ std::vector<State> separate(
                 std::vector<int> path = getPath(md[target.pos].parent, map, agent.pos, target.pos, INT_MAX);
                 if (!path.empty()) actions.push_back(path);
             }
+            actions.push_back({-1});
         } else {
             for (Agent& target : state.agentMgr.agents) {
                 if (target.kind != AgentKind::PATROL) continue;

@@ -1,4 +1,3 @@
-#include <stdexcept>
 #include <climits>
 #include <vector>
 #include <queue>
@@ -53,12 +52,9 @@ public:
         height = h;
         cells.assign(w * h, Terrain::PLAIN);
         roadStat.assign(w * h, RoadStatus::SMOOTH);
-        if ((int)grid.size() != h) throw std::runtime_error("マップの行数が height と一致しません");
         for (int r = 0; r < h; ++r) {
-            if ((int)grid[r].size() != w) throw std::runtime_error("マップの列数が width と一致しません");
             for (int c = 0; c < w; ++c) {
                 int v = grid[r][c];
-                if (v < 0 || v > 3) throw std::runtime_error("不正な地形コードです");
                 cells[r * w + c] = static_cast<Terrain>(v);
             }
         }
