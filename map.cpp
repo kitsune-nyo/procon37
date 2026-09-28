@@ -31,25 +31,6 @@ public:
     MoveCost operator+(const MoveCost& r) const { return {time + r.time, fuel + r.fuel}; }
 };
 
-inline MoveCost getMoveCost(Terrain terrain, RoadStatus road = RoadStatus::SMOOTH) {
-    switch (terrain) {
-        case Terrain::PLAIN:
-            return {2, 1};
-        case Terrain::MOUNTAIN:
-            return {3, 2};
-        case Terrain::ROAD:
-            switch (road) {
-                case RoadStatus::SMOOTH:    return {1, 2};
-                case RoadStatus::CONGESTED: return {2, 2};
-                case RoadStatus::JAMMED:    return {4, 2};
-            }
-            return {1, 2};
-        case Terrain::POND:
-        default:
-            return {0, 0};
-    }
-}
-
 enum class Direction : int { NW = 0, NE = 1, E = 2, SE = 3, SW = 4, W = 5 };
 
 inline const int DIR_TABLE[2][6][2] = {
@@ -107,6 +88,27 @@ public:
     }
 };
 
+inline MoveCost getMoveCost(Map& map, int pos) {
+    Terrain t = map.terrainAt(pos);
+    RoadStatus r = map.roadStatAt(pos);
+    switch (t) {
+        case Terrain::PLAIN:
+            return {2, 1};
+        case Terrain::MOUNTAIN:
+            return {3, 2};
+        case Terrain::ROAD:
+            switch (r) {
+                case RoadStatus::SMOOTH:    return {1, 2};
+                case RoadStatus::CONGESTED: return {2, 2};
+                case RoadStatus::JAMMED:    return {4, 2};
+            }
+            return {1, 2};
+        case Terrain::POND:
+        default:
+            return {0, 0};
+    }
+}
+
 inline int getNeighbor(const Map& map, int idx, Direction dir) {
     int r = map.rowOf(idx);
     int c = map.colOf(idx);
@@ -153,7 +155,7 @@ ReverseDijkstraResult reverseDijkstra(Map& map, int goal) {
         for (int m = 0; m < move.size(); m++) {
             int next = move[m];
             if (map.terrainAt(next) == Terrain::POND) continue;
-            MoveCost cost = getMoveCost(map.terrainAt(next), map.roadStat[next]);
+            MoveCost cost = getMoveCost(map, next);
             MoveCost newDist = d + cost;
             if (newDist.time < dist[next].time) {
                 dist[next] = newDist;
@@ -166,16 +168,25 @@ ReverseDijkstraResult reverseDijkstra(Map& map, int goal) {
     return {dist, parent};
 }
 
-std::vector<int> getPath(std::vector<int>& v, int start, int goal) {
+std::vector<int> getPath(std::vector<int>& v, Map& map, int start, int goal, int fuel) {
     std::vector<int> ret;
 
     int current = start;
+
     while (current != INT_MAX) {
         ret.push_back(current);
+
         if (current == goal) break;
-        current = v[current];
+
+        int next = v[current];
+        if (next == INT_MAX) break;
+
+        MoveCost cost = getMoveCost(map, current);
+        if (fuel < cost.fuel) break;
+
+        fuel -= cost.fuel;
+        current = next;
     }
 
-    if (ret.back() != goal) return {};
     return ret;
 }

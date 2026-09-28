@@ -1,4 +1,4 @@
-#include <stdexcept>
+#include <set>
 #include <queue>
 
 enum AgentKind { PATROL, SUPPLY };
@@ -7,7 +7,8 @@ struct Agent {
     int pos, fuel;
     AgentKind kind;
     std::queue<int> actions;
-    std::vector<int> history, visitedSpotPos;
+    std::vector<int> history;
+    std::set<int> visitedSpotPos;
 };
 
 class AgentManager {
@@ -23,14 +24,11 @@ public:
         agents.push_back(agent);
     }
 
-    void assignKinds(std::vector<AgentKind> kinds) {
+    void assignKinds(const std::vector<AgentKind>& kinds) {
         for (int a = 0; a < kinds.size(); a++) {
-            if (a >= agents.size()) throw std::runtime_error("エージェントに対するクエリが多すぎます");
-            else {
-                agents[a].kind = kinds[a];
-                if (kinds[a] == AgentKind::PATROL) patrolNum++;
-                else supplyNum++;
-            }
+            agents[a].kind = kinds[a];
+            if (kinds[a] == AgentKind::PATROL) patrolNum++;
+            else supplyNum++;
         }
     }
 };
