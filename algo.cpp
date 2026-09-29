@@ -83,7 +83,7 @@ int main() {
     agentMgr.placeAgent(32);
     agentMgr.placeAgent(1);
     agentMgr.placeAgent(43);
-    agentMgr.assignKinds({AgentKind::PATROL, AgentKind::SUPPLY, AgentKind::PATROL, AgentKind::PATROL});
+    agentMgr.assignKinds({AgentKind::SUPPLY, AgentKind::SUPPLY, AgentKind::PATROL, AgentKind::PATROL});
 
     // ===CACHE===
 
@@ -94,18 +94,18 @@ int main() {
         if (map.cells[i] != Terrain::POND) {
             Terrain tmp = map.cells[i];
             map.cells[i] = Terrain::POND;
-            mapDijkstra.push_back(reverseDijkstra(map, i));
+            dropDijkstra.push_back(reverseDijkstra(map, i));
             map.cells[i] = tmp;
         } else {
             std::vector<MoveCost> a;
             std::vector<int> b;
-            mapDijkstra.push_back({a, b});
+            dropDijkstra.push_back({a, b});
         }
     }
 
     // ===SEARCH===
 
-    int beamWidth = 400;
+    int beamWidth = 800;
     std::priority_queue<State, std::vector<State>, std::greater<State>> states;
     State init(spotMgr, agentMgr);
     states.push(init);
@@ -127,7 +127,9 @@ int main() {
     while (states.size() > 1) states.pop();
     State bestState = states.top();
 
+    std::cout << "\n";
     for (Agent& agent: bestState.agentMgr.agents) std::cout << "Agent: { " << "fuel: " << agent.fuel << ", pos: " << agent.pos << " }\n";
+    std::cout << "\n";
 
     std::cout << "brand:";
     for (auto it: bestState.udonBrand) std::cout << " " << it;
@@ -135,9 +137,12 @@ int main() {
     std::cout << "udon: " << bestState.udonSum << "\n\n";
 
     for (Agent& agent: bestState.agentMgr.agents) {
-        std::cout << "Agent action:";
+        std::cout << "Agent action: ";
         std::vector<int> answer = compress(agent.history);
-        for (int i = 0; i < answer.size(); i++) std::cout << " " << answer[i];
+        for (int i = 0; i < answer.size(); i++) {
+            if (i > 0) std::cout << ", ";
+            std::cout << answer[i];
+        }
         std::cout << "\n";
     }
 

@@ -2,6 +2,8 @@
 #include <vector>
 #include <queue>
 
+#define BIG 99999
+
 enum class Terrain : int {
     PLAIN    = 0,
     ROAD     = 1,
@@ -21,11 +23,11 @@ public:
     bool operator!=(const MoveCost& r) const { return !((time == r.time) && (fuel == r.fuel)); }
     bool operator>(const MoveCost& r) const {
         if (time != r.time) return time > r.time;
-        return fuel > r.fuel;
+        return fuel < r.fuel;
     }
     bool operator<(const MoveCost& r) const {
         if (time != r.time) return time < r.time;
-        return fuel < r.fuel;
+        return fuel > r.fuel;
     }
     MoveCost operator+(const MoveCost& r) const { return {time + r.time, fuel + r.fuel}; }
 };
@@ -33,48 +35,38 @@ public:
 enum class Direction : int { NW = 0, NE = 1, E = 2, SE = 3, SW = 4, W = 5 };
 
 inline const int DIR_TABLE[2][6][2] = {
-    // 偶数行 (r % 2 == 0)
-    { {-1, -1}, {-1, 0}, {0, 1}, {1, -1}, {1, 0}, {0, -1}, },
-    // 奇数行 (r % 2 == 1)
-    { {-1, 0}, {-1, 1}, {0, 1}, {1, 0}, {1, 1}, {0, -1}, }
+    { {-1, -1}, {-1, 0}, {0, 1}, {1, 0}, {1, -1}, {0, -1}, },
+    { {-1, 0}, {-1, 1}, {0, 1}, {1, 1}, {1, 0}, {0, -1}, }
 };
 
 class Map {
 public:
-    int width;
-    int height;
+    int width, height;
     std::vector<Terrain> cells;
     std::vector<RoadStatus> roadStat;
 
     void init(int w, int h, const std::vector<std::vector<int>>& grid)
     {
-        width = w;
-        height = h;
+        width = w, height = h;
         cells.assign(w * h, Terrain::PLAIN);
         roadStat.assign(w * h, RoadStatus::SMOOTH);
-        for (int r = 0; r < h; ++r) {
-            for (int c = 0; c < w; ++c) {
-                int v = grid[r][c];
-                cells[r * w + c] = static_cast<Terrain>(v);
-            }
+        for (int r = 0; r < h; r++) {
+            for (int c = 0; c < w; c++) cells[r * w + c] = static_cast<Terrain>(grid[r][c]);
         }
     }
 
     void setRoadStatus(int pos, RoadStatus road) { roadStat[pos] = road; }
 
-    inline int indexOf(int r, int c) const {
-        if (r < 0 || r >= height || c < 0 || c >= width) return -1;
-        return r * width + c;
-    }
+    inline int indexOf(int r, int c) const { return r * width + c; }
     inline int rowOf(int idx) const { return idx / width; }
     inline int colOf(int idx) const { return idx % width; }
 
     Terrain terrainAt(int idx) const { return cells[idx]; }
     RoadStatus roadStatAt(int idx) const { return roadStat[idx]; }
 
-    int getDirection(int pos, int next) {
-        int r = rowOf(pos);
-        int c = colOf(pos);
+    int getDirection(int current, int next) {
+        int r = rowOf(current);
+        int c = colOf(current);
         for (int d = 0; d < 6; d++) {
             int nr = r + DIR_TABLE[r % 2][d][0];
             int nc = c + DIR_TABLE[r % 2][d][1];
@@ -82,48 +74,40 @@ public:
         }
         return -1;
     }
+
+    inline std::vector<int> getAllNeighbors(int idx) {
+        std::vector<int> result;
+        for (int d = 0; d < 6; d++) {
+            int r = rowOf(idx), c = colOf(idx);
+            int parity = r % 2;
+            int dr = DIR_TABLE[parity][d][0], dc = DIR_TABLE[parity][d][1];
+            if (r + dr < 0 || r + dr > height - 1 || c + dc < 0 || c + dc > width - 1) continue;
+            result.push_back(indexOf(r + dr, c + dc));
+        }
+        return result;
+    }
+
+    inline MoveCost getMoveCost(int pos) {
+        Terrain t = terrainAt(pos);
+        RoadStatus r = roadStatAt(pos);
+        switch (t) {
+            case Terrain::PLAIN:
+                return {2, 1};
+            case Terrain::MOUNTAIN:
+                return {3, 2};
+            case Terrain::ROAD:
+                switch (r) {
+                    case RoadStatus::SMOOTH:    return {1, 2};
+                    case RoadStatus::CONGESTED: return {2, 2};
+                    case RoadStatus::JAMMED:    return {4, 2};
+                }
+                return {1, 2};
+            case Terrain::POND:
+            default:
+                return {0, 0};
+        }
+    }
 };
-
-inline MoveCost getMoveCost(Map& map, int pos) {
-    Terrain t = map.terrainAt(pos);
-    RoadStatus r = map.roadStatAt(pos);
-    switch (t) {
-        case Terrain::PLAIN:
-            return {2, 1};
-        case Terrain::MOUNTAIN:
-            return {3, 2};
-        case Terrain::ROAD:
-            switch (r) {
-                case RoadStatus::SMOOTH:    return {1, 2};
-                case RoadStatus::CONGESTED: return {2, 2};
-                case RoadStatus::JAMMED:    return {4, 2};
-            }
-            return {1, 2};
-        case Terrain::POND:
-        default:
-            return {0, 0};
-    }
-}
-
-inline int getNeighbor(const Map& map, int idx, Direction dir) {
-    int r = map.rowOf(idx);
-    int c = map.colOf(idx);
-    int parity = r % 2;
-    int dr = DIR_TABLE[parity][(int)dir][0];
-    int dc = DIR_TABLE[parity][(int)dir][1];
-    int nidx = map.indexOf(r + dr, c + dc);
-    if (nidx < 0) return -1;
-    return nidx;
-}
-
-inline std::vector<int> getAllNeighbors(const Map& map, int idx) {
-    std::vector<int> result;
-    for (int d = 0; d < 6; ++d) {
-        int n = getNeighbor(map, idx, static_cast<Direction>(d));
-        if (n != -1) result.push_back(n);
-    }
-    return result;
-}
 
 struct ReverseDijkstraResult {
     std::vector<MoveCost> dist;
@@ -131,31 +115,28 @@ struct ReverseDijkstraResult {
 };
 
 ReverseDijkstraResult reverseDijkstra(Map& map, int goal) {
-    std::vector<MoveCost> dist(map.width * map.height, {INT_MAX, INT_MAX});
+    std::vector<MoveCost> dist(map.width * map.height, {BIG, BIG});
     std::vector<int> parent(map.width * map.height, -1);
     
     using p = std::pair<MoveCost, int>;
     std::priority_queue<p, std::vector<p>, std::greater<p>> search;
 
     dist[goal] = {0, 0};
-    search.push({{0, 0}, goal});
+    search.push({dist[goal], goal});
 
     while (!search.empty()) {
         MoveCost d = search.top().first;
-        int p = search.top().second;
+        int current = search.top().second;
         search.pop();
 
-        if (d != dist[p]) continue;
-        std::vector move = getAllNeighbors(map, p);
+        if (d != dist[current]) continue;
 
-        for (int m = 0; m < move.size(); m++) {
-            int next = move[m];
+        for (int next: map.getAllNeighbors(current)) {
             if (map.terrainAt(next) == Terrain::POND) continue;
-            MoveCost cost = getMoveCost(map, next);
-            MoveCost newDist = d + cost;
-            if (newDist.time < dist[next].time) {
+            MoveCost newDist = d + map.getMoveCost(next);
+            if (newDist < dist[next]) {
                 dist[next] = newDist;
-                parent[next] = p;
+                parent[next] = current;
                 search.push({newDist, next});
             }
         }
@@ -169,18 +150,30 @@ std::vector<int> getPath(std::vector<int>& v, Map& map, int start, int goal, int
 
     int current = start;
 
-    while (current != INT_MAX) {
-        ret.push_back(current);
-
+    while (current != -1 && current != INT_MAX) {
         if (current == goal) break;
 
         int next = v[current];
-        if (next == INT_MAX) break;
 
-        MoveCost cost = getMoveCost(map, current);
+        if (next == -1 || next == INT_MAX) break;
+
+        bool adjacent = false;
+        for (int n : map.getAllNeighbors(current)) {
+            if (n == next) {
+                adjacent = true;
+                break;
+            }
+        }
+
+        if (!adjacent) break;
+
+        MoveCost cost = map.getMoveCost(current);
         if (fuel < cost.fuel) break;
 
         fuel -= cost.fuel;
+
+        ret.push_back(next);
+
         current = next;
     }
 

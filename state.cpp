@@ -41,9 +41,10 @@ public:
 
     void collectUdon() {
         for (Agent& agent: agentMgr.agents) {
+            if (agent.kind == AgentKind::SUPPLY) continue;
             Spot* s = spotMgr.findAt(agent.pos);
             if (s == nullptr) continue;
-            bool canCollect = (agent.visitedSpotPos.count(s->pos) > 0);
+            bool canCollect = (agent.visitedSpotPos.count(s->pos) == 0);
             if (canCollect) {
                 if (spotMgr.consume(s->pos)) {
                     udonSum++;
@@ -80,10 +81,10 @@ void evaluate(
         agentsToNearestSpotScore
     };
     std::vector<double> w = {
+        10000,
         1000,
-        100,
-        10,
-        1
+        1,
+        10
     };
     for (int i = 0; i < x.size(); i++) state.score += w[i] * x[i];
 }
@@ -151,7 +152,7 @@ bool update(State& state, Map& map, int steps) {
         }
 
         if (state.step == 0 || agent.history[state.step] != INACTION) {
-            MoveCost cost = getMoveCost(map, agent.pos);
+            MoveCost cost = map.getMoveCost(agent.pos);
             if (steps - state.step < cost.time) {
                 agent.history[state.step] = state.step - steps;
                 continue;
