@@ -148,12 +148,10 @@ public:
         std::vector<int> ret;
 
         int current = start;
-
         while (current != -1 && current != INT_MAX) {
             if (current == goal) break;
 
             int next = v[current];
-
             if (next == -1 || next == INT_MAX) break;
 
             bool adjacent = false;
@@ -163,18 +161,16 @@ public:
                     break;
                 }
             }
-
             if (!adjacent) break;
 
             MoveCost cost = getMoveCost(current);
             if (fuel < cost.fuel) break;
-
             fuel -= cost.fuel;
 
             ret.push_back(next);
-
             current = next;
         }
+        if (ret.empty()) ret.push_back(-1);
 
         return ret;
     }

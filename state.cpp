@@ -75,6 +75,7 @@ void evaluate(
         if (agent.kind == AgentKind::SUPPLY) continue;
         fuel += agent.fuel;
     }
+    fuel /= state.agentMgr.patrolNum;
 
     state.score = 0;
     std::vector<double> x = {
@@ -84,10 +85,10 @@ void evaluate(
         agentsToNearestSpotScore
     };
     std::vector<double> w = {
+        100000,
         10000,
-        1000,
         1,
-        10
+        100
     };
     for (int i = 0; i < x.size(); i++) state.score += w[i] * x[i];
 }
@@ -112,7 +113,6 @@ std::vector<State> separate(
                 std::vector<int> path = map.getPath(md[target.pos].parent, agent.pos, target.pos, agent.fuel);
                 if (!path.empty()) actions.push_back(path);
             }
-            actions.push_back({-1});
         } else {
             for (Agent& target : state.agentMgr.agents) {
                 if (target.kind != AgentKind::PATROL) continue;

@@ -1,13 +1,13 @@
 #include <vector>
 
-struct Spot { int pos, brand, maxStock, stock; };
+struct Spot { int brand, pos, stock; };
 
 class SpotManager {
 public:
     std::vector<Spot> spots;
 
     void placeSpot(int brand, int pos, int stocks) {
-        Spot sp = { brand, pos, stocks, stocks };
+        Spot sp = { brand, pos, stocks };
         spots.push_back(sp);
     }
 
