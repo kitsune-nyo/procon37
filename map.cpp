@@ -32,6 +32,11 @@ public:
     MoveCost operator+(const MoveCost& r) const { return {time + r.time, fuel + r.fuel}; }
 };
 
+struct ReverseDijkstraResult {
+    std::vector<MoveCost> dist;
+    std::vector<int> parent;
+};
+
 enum class Direction : int { NW = 0, NE = 1, E = 2, SE = 3, SW = 4, W = 5 };
 
 inline const int DIR_TABLE[2][6][2] = {
@@ -107,75 +112,70 @@ public:
                 return {0, 0};
         }
     }
-};
 
-struct ReverseDijkstraResult {
-    std::vector<MoveCost> dist;
-    std::vector<int> parent;
-};
+    ReverseDijkstraResult reverseDijkstra(int goal) {
+        std::vector<MoveCost> dist(width * height, {BIG, BIG});
+        std::vector<int> parent(width * height, -1);
+        
+        using p = std::pair<MoveCost, int>;
+        std::priority_queue<p, std::vector<p>, std::greater<p>> search;
 
-ReverseDijkstraResult reverseDijkstra(Map& map, int goal) {
-    std::vector<MoveCost> dist(map.width * map.height, {BIG, BIG});
-    std::vector<int> parent(map.width * map.height, -1);
-    
-    using p = std::pair<MoveCost, int>;
-    std::priority_queue<p, std::vector<p>, std::greater<p>> search;
+        dist[goal] = {0, 0};
+        search.push({dist[goal], goal});
 
-    dist[goal] = {0, 0};
-    search.push({dist[goal], goal});
+        while (!search.empty()) {
+            MoveCost d = search.top().first;
+            int current = search.top().second;
+            search.pop();
 
-    while (!search.empty()) {
-        MoveCost d = search.top().first;
-        int current = search.top().second;
-        search.pop();
+            if (d != dist[current]) continue;
 
-        if (d != dist[current]) continue;
-
-        for (int next: map.getAllNeighbors(current)) {
-            if (map.terrainAt(next) == Terrain::POND) continue;
-            MoveCost newDist = d + map.getMoveCost(next);
-            if (newDist < dist[next]) {
-                dist[next] = newDist;
-                parent[next] = current;
-                search.push({newDist, next});
-            }
-        }
-    }
-
-    return {dist, parent};
-}
-
-std::vector<int> getPath(std::vector<int>& v, Map& map, int start, int goal, int fuel) {
-    std::vector<int> ret;
-
-    int current = start;
-
-    while (current != -1 && current != INT_MAX) {
-        if (current == goal) break;
-
-        int next = v[current];
-
-        if (next == -1 || next == INT_MAX) break;
-
-        bool adjacent = false;
-        for (int n : map.getAllNeighbors(current)) {
-            if (n == next) {
-                adjacent = true;
-                break;
+            for (int next: getAllNeighbors(current)) {
+                if (terrainAt(next) == Terrain::POND) continue;
+                MoveCost newDist = d + getMoveCost(next);
+                if (newDist < dist[next]) {
+                    dist[next] = newDist;
+                    parent[next] = current;
+                    search.push({newDist, next});
+                }
             }
         }
 
-        if (!adjacent) break;
-
-        MoveCost cost = map.getMoveCost(current);
-        if (fuel < cost.fuel) break;
-
-        fuel -= cost.fuel;
-
-        ret.push_back(next);
-
-        current = next;
+        return {dist, parent};
     }
 
-    return ret;
-}
+    std::vector<int> getPath(std::vector<int>& v, int start, int goal, int fuel) {
+        std::vector<int> ret;
+
+        int current = start;
+
+        while (current != -1 && current != INT_MAX) {
+            if (current == goal) break;
+
+            int next = v[current];
+
+            if (next == -1 || next == INT_MAX) break;
+
+            bool adjacent = false;
+            for (int n : getAllNeighbors(current)) {
+                if (n == next) {
+                    adjacent = true;
+                    break;
+                }
+            }
+
+            if (!adjacent) break;
+
+            MoveCost cost = getMoveCost(current);
+            if (fuel < cost.fuel) break;
+
+            fuel -= cost.fuel;
+
+            ret.push_back(next);
+
+            current = next;
+        }
+
+        return ret;
+    }
+};

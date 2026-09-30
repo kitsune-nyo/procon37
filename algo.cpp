@@ -88,13 +88,13 @@ int main() {
     // ===CACHE===
 
     std::vector<ReverseDijkstraResult> mapDijkstra;
-    for (int i = 0; i < map.cells.size(); i++) mapDijkstra.push_back(reverseDijkstra(map, i));
+    for (int i = 0; i < map.cells.size(); i++) mapDijkstra.push_back(map.reverseDijkstra(i));
     std::vector<ReverseDijkstraResult> dropDijkstra;
     for (int i = 0; i < map.cells.size(); i++) {
         if (map.cells[i] != Terrain::POND) {
             Terrain tmp = map.cells[i];
             map.cells[i] = Terrain::POND;
-            dropDijkstra.push_back(reverseDijkstra(map, i));
+            dropDijkstra.push_back(map.reverseDijkstra(i));
             map.cells[i] = tmp;
         } else {
             std::vector<MoveCost> a;

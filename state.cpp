@@ -71,7 +71,10 @@ void evaluate(
     }
 
     double fuel = 0;
-    for (Agent& agent: state.agentMgr.agents) fuel += agent.fuel;
+    for (Agent& agent: state.agentMgr.agents) {
+        if (agent.kind == AgentKind::SUPPLY) continue;
+        fuel += agent.fuel;
+    }
 
     state.score = 0;
     std::vector<double> x = {
@@ -101,23 +104,23 @@ std::vector<State> separate(
 
         if (agent.kind == AgentKind::PATROL) {
             for (Spot& target : state.spotMgr.spots) {
-                std::vector<int> path = getPath(md[target.pos].parent, map, agent.pos, target.pos, INT_MAX);
+                std::vector<int> path = map.getPath(md[target.pos].parent, agent.pos, target.pos, agent.fuel);
                 if (!path.empty()) actions.push_back(path);
             }
             for (Agent& target : state.agentMgr.agents) {
                 if (target.kind != AgentKind::SUPPLY) continue;
-                std::vector<int> path = getPath(md[target.pos].parent, map, agent.pos, target.pos, INT_MAX);
+                std::vector<int> path = map.getPath(md[target.pos].parent, agent.pos, target.pos, agent.fuel);
                 if (!path.empty()) actions.push_back(path);
             }
             actions.push_back({-1});
         } else {
             for (Agent& target : state.agentMgr.agents) {
                 if (target.kind != AgentKind::PATROL) continue;
-                std::vector<int> path = getPath(md[target.pos].parent, map, agent.pos, target.pos, INT_MAX);
+                std::vector<int> path = map.getPath(md[target.pos].parent, agent.pos, target.pos, INT_MAX);
                 if (!path.empty()) actions.push_back(path);
             }
             for (Spot& target : state.spotMgr.spots) {
-                std::vector<int> path = getPath(md[target.pos].parent, map, agent.pos, target.pos, INT_MAX);
+                std::vector<int> path = map.getPath(md[target.pos].parent, agent.pos, target.pos, INT_MAX);
                 if (!path.empty()) actions.push_back(path);
             }
         }
