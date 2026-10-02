@@ -1,14 +1,9 @@
-#include <algorithm>
-#include <queue>
-#include <set>
-
 #include "map.cpp"
 #include "spot.cpp"
 #include "agent.cpp"
 
 #define INACTION INT_MIN
 #define WAIT -1
-#define BIG 99999
 
 class State {
 public:
@@ -75,7 +70,7 @@ void evaluate(
         if (agent.kind == AgentKind::SUPPLY) continue;
         fuel += agent.fuel;
     }
-    fuel /= state.agentMgr.patrolNum;
+    fuel /= std::max(1, state.agentMgr.patrolNum);
 
     state.score = 0;
     std::vector<double> x = {
@@ -85,7 +80,7 @@ void evaluate(
         agentsToNearestSpotScore
     };
     std::vector<double> w = {
-        100000,
+        10000,
         10000,
         1,
         100
@@ -103,37 +98,40 @@ std::vector<State> separate(
         Agent& agent = state.agentMgr.agents[i];
         std::vector<std::vector<int>> actions;
 
+        std::vector<int> path;
         if (agent.kind == AgentKind::PATROL) {
             for (Spot& target : state.spotMgr.spots) {
-                std::vector<int> path = map.getPath(md[target.pos].parent, agent.pos, target.pos, agent.fuel);
+                path = map.getPath(md[target.pos].parent, agent.pos, target.pos, agent.fuel);
                 if (!path.empty()) actions.push_back(path);
             }
             for (Agent& target : state.agentMgr.agents) {
                 if (target.kind != AgentKind::SUPPLY) continue;
-                std::vector<int> path = map.getPath(md[target.pos].parent, agent.pos, target.pos, agent.fuel);
+                path = map.getHalfPath(md[target.pos].parent, agent.pos, target.pos, agent.fuel);
                 if (!path.empty()) actions.push_back(path);
             }
         } else {
             for (Agent& target : state.agentMgr.agents) {
                 if (target.kind != AgentKind::PATROL) continue;
-                std::vector<int> path = map.getPath(md[target.pos].parent, agent.pos, target.pos, INT_MAX);
+                path = map.getHalfPath(md[target.pos].parent, agent.pos, target.pos, INT_MAX);
                 if (!path.empty()) actions.push_back(path);
             }
             for (Spot& target : state.spotMgr.spots) {
-                std::vector<int> path = map.getPath(md[target.pos].parent, agent.pos, target.pos, INT_MAX);
+                path = map.getPath(md[target.pos].parent, agent.pos, target.pos, INT_MAX);
                 if (!path.empty()) actions.push_back(path);
             }
         }
+        if (actions.empty()) actions.push_back({-1});
 
-        for (auto& action : actions) {
+        for (std::vector<int>& action : actions) {
             State s = state;
-            auto& newAgent = s.agentMgr.agents[i];
+            Agent& newAgent = s.agentMgr.agents[i];
             while (!newAgent.actions.empty()) newAgent.actions.pop();
             for (int a : action) newAgent.actions.push(a);
             ret.push_back(s);
         }
-
-        return ret;
+        // 行動未決定のエージェントのうち最初の1人だけ展開する。
+        // (残りは子状態が再びseparateするので探索空間は同じで、担当順の重複だけ消える)
+        break;
     }
 
     return ret;
@@ -149,6 +147,7 @@ bool update(State& state, Map& map, int steps) {
         int nextPos = agent.actions.front();
 
         if (nextPos == WAIT) {
+            if (agent.history[state.step] == INACTION) continue; // 移動中は履歴を壊さない
             agent.history[state.step] = WAIT;
             agent.actions.pop();
             continue;
@@ -157,7 +156,7 @@ bool update(State& state, Map& map, int steps) {
         if (state.step == 0 || agent.history[state.step] != INACTION) {
             MoveCost cost = map.getMoveCost(agent.pos);
             if (steps - state.step < cost.time) {
-                agent.history[state.step] = state.step - steps;
+                agent.history[state.step] = WAIT;
                 continue;
             }
             else agent.history[state.step] = map.getDirection(agent.pos, nextPos);

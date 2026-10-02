@@ -16,19 +16,18 @@ public:
     std::vector<Agent> agents;
     int fuel = 0, patrolNum = 0, supplyNum = 0;
 
-    void placeAgent(int pos) {
+    void placeAgent(int pos, int f) {
         Agent agent;
         agent.pos = pos;
-        agent.fuel = fuel;
+        agent.fuel = f;
+        patrolNum++;
         agent.kind = AgentKind::PATROL;
         agents.push_back(agent);
     }
 
-    void assignKinds(const std::vector<AgentKind>& kinds) {
-        for (int a = 0; a < kinds.size(); a++) {
-            agents[a].kind = kinds[a];
-            if (kinds[a] == AgentKind::PATROL) patrolNum++;
-            else supplyNum++;
-        }
+    void decideSupply(int agent) {
+        agents[agent].kind = AgentKind::SUPPLY;
+        patrolNum--;
+        supplyNum++;
     }
 };

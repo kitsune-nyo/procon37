@@ -80,6 +80,14 @@ public:
         return -1;
     }
 
+    inline int getNeighbor(int idx, Direction dir) {
+        int r = rowOf(idx), c = colOf(idx);
+        int parity = r % 2;
+        int dr = DIR_TABLE[parity][(int)dir][0], dc = DIR_TABLE[parity][(int)dir][1];
+        if (r + dr < 0 || r + dr > height - 1 || c + dc < 0 || c + dc > width - 1) return -1;
+        return indexOf(r + dr, c + dc);
+    }
+
     inline std::vector<int> getAllNeighbors(int idx) {
         std::vector<int> result;
         for (int d = 0; d < 6; d++) {
@@ -148,6 +156,7 @@ public:
         std::vector<int> ret;
 
         int current = start;
+        int f = fuel;
         while (current != -1 && current != INT_MAX) {
             if (current == goal) break;
 
@@ -164,13 +173,23 @@ public:
             if (!adjacent) break;
 
             MoveCost cost = getMoveCost(current);
-            if (fuel < cost.fuel) break;
-            fuel -= cost.fuel;
+            if (f < cost.fuel) break;
+            f -= cost.fuel;
 
             ret.push_back(next);
             current = next;
         }
-        if (ret.empty()) ret.push_back(-1);
+
+        return ret;
+    }
+
+    std::vector<int> getHalfPath(std::vector<int>& v, int start, int goal, int fuel) {
+        std::vector<int> ret;
+        
+        std::vector<int> path = getPath(v, start, goal, fuel);
+        if (path.empty()) return path;
+
+        for (int i = 0; i < (path.size() + 1) / 2; i++) ret.push_back(path[i]);
 
         return ret;
     }
