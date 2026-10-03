@@ -13,44 +13,37 @@
 //   ※ nlohmann/json のシングルヘッダ "json.hpp" を同じフォルダに置くこと
 //     https://github.com/nlohmann/json/releases から json.hpp をDL
 // ============================================================
-
-#include <iostream>
-#include <string>
-#include <vector>
-#include <map>
-#include <set>
-#include <queue>
-#include <algorithm>
-#include <chrono>
-#include <climits>
-#include <functional>
-#include <stdexcept>
-
+#pragma region including
 // ※ state.cpp が #define WAIT / BIG などを定義するので、
 //    外部ライブラリのincludeは必ずその前に書くこと
-#include <curl/curl.h>
-#include "json.hpp"
 
-#include "state.cpp"   // map.cpp, spot.cpp, agent.cpp も一緒に入る
+#include <iostream>
+#include <curl/curl.h>
+
+#include "json.hpp"
+#include "state.cpp"
 
 using json = nlohmann::json;
+#pragma endregion
 
 // ============================================================
 // 設定値
 // TODO: BASE_URL / TEAM_TOKEN は公式サイト公開後に実値へ差し替え
 // ============================================================
-static const std::string BASE_URL   = "http://<競技サーバーのIP>:<port>";
-static const std::string TEAM_TOKEN = "<チームトークン>";
+#pragma region setting
+static const std::string BASE_URL   = "http://localhost:8080";
+// static const std::string TEAM_TOKEN = "token-p0";
+static const std::string TEAM_TOKEN = "?token=token-p0";
 
 constexpr int    BEAM_WIDTH        = 2000;  // ビーム幅の上限
-constexpr double TIME_BUDGET_RATIO = 0.5;   // 1日(daySeconds)のうち探索に使ってよい割合
-                                            // 超えそうならビーム幅を自動で縮める
-
+constexpr double TIME_BUDGET_RATIO = 0.75;   // 1日(daySeconds)のうち探索に使ってよい割合
+#pragma endregion
 
 // ============================================================
 // 1. protocol : サーバーとのJSONフォーマット変換
 // ============================================================
-struct SpotConfig {          // ※アルゴリズム側の Spot と名前が被るので改名
+#pragma region protocol
+struct SpotConfig {
     int brand;
     int pos;
     int stocks;
@@ -161,12 +154,12 @@ inline DayInfo parseDayInfo(const json& j) {
 
 inline json serializeAgentTypes(const std::vector<int>& types) { return json(types); }
 inline json serializeActionPlan(const std::vector<std::vector<int>>& plan) { return json(plan); }
-
+#pragma endregion
 
 // ============================================================
 // 2. solver : サーバーの情報 -> アルゴリズムの入力 -> 行動計画
 // ============================================================
-
+#pragma region solver
 // historyを「方向 or まとめた待機(負の値)」の列に変換する (サーバーへ送る形式)
 inline std::vector<int> compress(const std::vector<int>& v) {
     std::vector<int> ret;
@@ -265,22 +258,23 @@ inline std::vector<std::vector<int>> solveDay(
     while (states.size() > 1) states.pop();
     State best = states.top();
 
-    std::cout << "  探索結果: brand=" << best.udonBrand.size()
+    std::cout << "  Searching result: brand=" << best.udonBrand.size()
               << " udon=" << best.udonSum
               << " score=" << best.score
-              << " (探索 " << elapsed() << " 秒, 最終ビーム幅 " << beamWidth << ")" << std::endl;
+              << " (searching " << elapsed() << " seconds, last beam width " << beamWidth << ")" << std::endl;
 
     std::vector<std::vector<int>> plans;
     for (Agent& agent : best.agentMgr.agents) plans.push_back(compress(agent.history));
     return plans;
 }
-
+#pragma endregion
 
 // ============================================================
 // 3. validator : 行動計画の事前検証
 //   構造のみ検証する (範囲外・池・ステップ合計)。
 //   補給による燃料回復は探索側が考慮済みなので、ここでは燃料残量は見ない。
 // ============================================================
+#pragma region validator
 struct ValidationResult {
     bool valid;
     std::string errorMessage;
@@ -296,40 +290,41 @@ inline ValidationResult validateAgentPlan(Map& map, const AgentState& agent,
             stepsUsed += -action;
         } else if (action <= 5) {
             int npos = map.getNeighbor(pos, static_cast<Direction>(action));
-            if (npos == -1) return {false, "マップ外への移動が指定されました"};
-            if (map.terrainAt(npos) == Terrain::POND) return {false, "池への移動が指定されました"};
-            if (map.terrainAt(pos) == Terrain::POND) return {false, "現在地から移動できません"};
+            if (npos == -1) return {false, "Being assigned moving out of the map"};
+            if (map.terrainAt(npos) == Terrain::POND) return {false, "Being assigned moving the pond"};
+            if (map.terrainAt(pos) == Terrain::POND) return {false, "Being assigned moving from the pond"};
 
             stepsUsed += map.getMoveCost(pos).time;
             pos = npos;
         } else {
-            return {false, "不正なアクション値です"};
+            return {false, "Action value is illigal"};
         }
 
-        if (stepsUsed > totalSteps) return {false, "ステップ数が1日の上限を超えています"};
+        if (stepsUsed > totalSteps) return {false, "Step count is over the maximum of the day"};
     }
 
-    if (stepsUsed != totalSteps) return {false, "ステップ数の合計が1日のステップ数と一致していません"};
+    if (stepsUsed != totalSteps) return {false, "Step count is not equal the step count of the day"};
     return {true, ""};
 }
 
 inline ValidationResult validatePlans(Map& map, const std::vector<AgentState>& agents,
                                       const std::vector<std::vector<int>>& plans, int totalSteps) {
     if (plans.size() != agents.size())
-        return {false, "エージェント数と行動計画数が一致していません"};
+        return {false, "Agents sum is not equal to actions array length"};
 
     for (size_t i = 0; i < plans.size(); ++i) {
         auto result = validateAgentPlan(map, agents[i], plans[i], totalSteps);
         if (!result.valid)
-            return {false, "エージェント" + std::to_string(i) + ": " + result.errorMessage};
+            return {false, "Agent " + std::to_string(i) + ": " + result.errorMessage};
     }
     return {true, ""};
 }
-
+#pragma endregion
 
 // ============================================================
 // 4. http_client : libcurlを使ったHTTP通信
 // ============================================================
+#pragma region http_client
 struct HttpResponse {
     long statusCode = 0;
     std::string body;
@@ -426,7 +421,7 @@ private:
         return totalSize;
     }
 };
-
+#pragma endregion
 
 // ============================================================
 // 5. main : 実行エントリーポイント
@@ -436,14 +431,15 @@ int main() {
         HttpClient http;
         http.setTimeout(10);
 
-        std::map<std::string, std::string> headers = {
-            {"Authorization", "Bearer " + TEAM_TOKEN}
-        };
+        // std::map<std::string, std::string> headers = {
+        //     {"Authorization", "Bearer " + TEAM_TOKEN}
+        // };
 
         // ---- 試合設定の取得 ----
-        HttpResponse configRes = http.get(BASE_URL + "/match/config", headers);
+        // HttpResponse configRes = http.get(BASE_URL + "/setting", headers);
+        HttpResponse configRes = http.get(BASE_URL + "/setting" + TEAM_TOKEN);
         if (!configRes.ok()) {
-            std::cerr << "マップ構成取得失敗: " << configRes.statusCode
+            std::cerr << "Failed getting the map structure: " << configRes.statusCode
                       << "\n" << configRes.body << std::endl;
             return 1;
         }
@@ -451,27 +447,38 @@ int main() {
         int numDays = static_cast<int>(config.daySteps.size());
 
         // ---- エージェントの役割決定 (先頭から補給役。1台しかいないときは全員パトロール) ----
-        int n = static_cast<int>(config.agents.size());
+        int n = config.agents.size();
         int numSupply = (n >= 2) ? std::max(1, n / 4) : 0;
         std::vector<int> agentTypes(n, 0);
         for (int i = 0; i < numSupply; ++i) agentTypes[i] = 1;
 
-        HttpResponse typeRes = http.postJson(BASE_URL + "/match/agent-types",
-                                             serializeAgentTypes(agentTypes).dump(),
-                                             headers);
+        // HttpResponse typeRes = http.postJson(BASE_URL + "/agent",
+        //                                      serializeAgentTypes(agentTypes).dump(),
+        //                                      headers);
+        HttpResponse typeRes = http.postJson(BASE_URL + "/agent" +TEAM_TOKEN,
+                                             serializeAgentTypes(agentTypes).dump());
         if (!typeRes.ok()) {
-            std::cerr << "エージェントタイプ送信失敗: " << typeRes.statusCode
-                      << "\n" << typeRes.body << std::endl;
+            std::cerr << "Failed to send agent type: " << typeRes.statusCode << "\n" << typeRes.body << std::endl;
         }
+        while (!http.get(BASE_URL + TEAM_TOKEN).ok()) {}
 
-        // ---- 日ごとのループ ----
+        int error_day = -1;
         for (int day = 0; day < numDays; ++day) {
-            HttpResponse dayRes = http.get(BASE_URL + "/match/day", headers);
+            // HttpResponse dayRes = http.get(BASE_URL + "/", headers);
+            HttpResponse dayRes = http.get(BASE_URL + TEAM_TOKEN);
             if (!dayRes.ok()) {
-                std::cerr << "Day " << day << " 情報取得失敗: " << dayRes.statusCode << std::endl;
+                if (error_day != day) {
+                    std::cerr << "Day " << day << " failed getting contents: " << dayRes.statusCode << std::endl;
+                    error_day = day;
+                }
+                day--;
                 continue;
             }
             DayInfo info = parseDayInfo(json::parse(dayRes.body));
+            if (info.day < day) {
+                day--;
+                continue;
+            }
 
             // サーバーが返した day を優先 (範囲外ならループ変数で代用)
             int d = (info.day >= 0 && info.day < numDays) ? info.day : day;
@@ -479,33 +486,33 @@ int main() {
             double daySec = (d < (int)config.daySeconds.size()) ? config.daySeconds[d] : 10;
             double budgetSec = daySec * TIME_BUDGET_RATIO;
 
-            std::cout << "Day " << d << " 探索開始 (steps=" << totalSteps
-                      << ", 予算 " << budgetSec << " 秒)" << std::endl;
+            std::cout << "Day " << d << " started searching (steps=" << totalSteps
+                      << ", " << budgetSec << " seconds)" << std::endl;
 
             Map map = buildMap(config, info);
             auto plans = solveDay(map, config, info, totalSteps, budgetSec);
 
             auto validation = validatePlans(map, info.agents, plans, totalSteps);
             if (!validation.valid) {
-                std::cerr << "行動計画が不正なため全員待機にフォールバック: "
+                std::cerr << "The action array is so illigal that all agents actions changed waiting as the fallback: "
                           << validation.errorMessage << std::endl;
                 plans.clear();
-                for (size_t i = 0; i < info.agents.size(); ++i)
-                    plans.push_back({ -totalSteps });
+                for (size_t i = 0; i < info.agents.size(); ++i) { plans.push_back({ -totalSteps }); }
             }
 
-            HttpResponse planRes = http.postJson(BASE_URL + "/match/action",
-                                                  serializeActionPlan(plans).dump(),
-                                                  headers);
+            // HttpResponse planRes = http.postJson(BASE_URL + "/",
+            //                                       serializeActionPlan(plans).dump(),
+            //                                       headers);
+            HttpResponse planRes = http.postJson(BASE_URL + TEAM_TOKEN, serializeActionPlan(plans).dump());
             if (!planRes.ok()) {
-                std::cerr << "Day " << day << " 行動計画送信失敗: " << planRes.statusCode
+                std::cerr << "Day " << day << " failed sending actions array: " << planRes.statusCode
                           << "\n" << planRes.body << std::endl;
             } else {
-                std::cout << "Day " << day << " 送信OK" << std::endl;
+                std::cout << "Day " << day << " sent actions array successfully" << std::endl;
             }
         }
     } catch (const std::exception& e) {
-        std::cerr << "致命的エラー: " << e.what() << std::endl;
+        std::cerr << "Fatal error: " << e.what() << std::endl;
         return 1;
     }
 

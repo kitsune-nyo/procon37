@@ -5,6 +5,9 @@
 #define INACTION INT_MIN
 #define WAIT -1
 
+const double fuelPerMax = 0.3;
+const std::vector<double> evaluateWeight = {10000, 10000, 1, 100};
+
 class State {
 public:
     SpotManager spotMgr;
@@ -79,12 +82,7 @@ void evaluate(
         fuel,
         agentsToNearestSpotScore
     };
-    std::vector<double> w = {
-        10000,
-        10000,
-        1,
-        100
-    };
+    std::vector<double> w = evaluateWeight;
     for (int i = 0; i < x.size(); i++) state.score += w[i] * x[i];
 }
 
@@ -120,7 +118,7 @@ std::vector<State> separate(
                 if (!path.empty()) actions.push_back(path);
             }
         }
-        if (actions.empty()) actions.push_back({-1});
+        if (actions.empty() || (double)agent.fuel / (double)state.agentMgr.fuel < fuelPerMax) actions.push_back({-1});
 
         for (std::vector<int>& action : actions) {
             State s = state;
@@ -129,8 +127,6 @@ std::vector<State> separate(
             for (int a : action) newAgent.actions.push(a);
             ret.push_back(s);
         }
-        // 行動未決定のエージェントのうち最初の1人だけ展開する。
-        // (残りは子状態が再びseparateするので探索空間は同じで、担当順の重複だけ消える)
         break;
     }
 
@@ -147,7 +143,7 @@ bool update(State& state, Map& map, int steps) {
         int nextPos = agent.actions.front();
 
         if (nextPos == WAIT) {
-            if (agent.history[state.step] == INACTION) continue; // 移動中は履歴を壊さない
+            if (agent.history[state.step] == INACTION) continue;
             agent.history[state.step] = WAIT;
             agent.actions.pop();
             continue;
