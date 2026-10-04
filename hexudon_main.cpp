@@ -9,9 +9,7 @@
 //
 // ビルド方法:
 //   g++ -std=c++17 -O2 hexudon_main.cpp -lcurl -o hexudon_main
-//   ※ state.cpp などは #include で取り込むので単体でコンパイルしないこと
-//   ※ nlohmann/json のシングルヘッダ "json.hpp" を同じフォルダに置くこと
-//     https://github.com/nlohmann/json/releases から json.hpp をDL
+//   https://github.com/nlohmann/json/releases から json.hpp をDL
 // ============================================================
 #pragma region including
 // ※ state.cpp が #define WAIT / BIG などを定義するので、
@@ -32,7 +30,6 @@ using json = nlohmann::json;
 // ============================================================
 #pragma region setting
 static const std::string BASE_URL   = "http://localhost:8080";
-// static const std::string TEAM_TOKEN = "token-p0";
 static const std::string TEAM_TOKEN = "?token=token-p0";
 
 constexpr int    BEAM_WIDTH        = 2000;  // ビーム幅の上限
@@ -165,7 +162,7 @@ inline std::vector<int> compress(const std::vector<int>& v) {
     std::vector<int> ret;
     int sum = 0;
     for (int e : v) {
-        if (e == INACTION) continue;   // 移動中のステップは数えない
+        if (e == INACTION) continue;
         if (e < 0) {
             sum += e;
         } else {
@@ -191,7 +188,7 @@ inline Map buildMap(const MatchConfig& config, const DayInfo& info) {
 
 // 1日分のビームサーチを実行し、エージェントごとの行動計画を返す
 inline std::vector<std::vector<int>> solveDay(
-    Map& map, const MatchConfig& config, const DayInfo& info, int steps, double budgetSec
+    Map& map, const MatchConfig& config, const DayInfo& info, int steps, double budgetSec, std::set<int>& brands
 ) {
     using Clock = std::chrono::steady_clock;
     auto t0 = Clock::now();
@@ -229,9 +226,9 @@ inline std::vector<std::vector<int>> solveDay(
             State state = states.top();
             states.pop();
             std::vector<State> newStates = separate(state, map, mapDijkstra, dropDijkstra);
-            if (update(state, map, steps)) states.push(state);
+            if (update(state, map, steps, brands)) states.push(state);
             for (State& next : newStates) {
-                evaluate(next, map, mapDijkstra, dropDijkstra);
+                evaluate(next, map, mapDijkstra, dropDijkstra, brands);
                 states.push(next);
             }
         }
@@ -431,12 +428,7 @@ int main() {
         HttpClient http;
         http.setTimeout(10);
 
-        // std::map<std::string, std::string> headers = {
-        //     {"Authorization", "Bearer " + TEAM_TOKEN}
-        // };
-
         // ---- 試合設定の取得 ----
-        // HttpResponse configRes = http.get(BASE_URL + "/setting", headers);
         HttpResponse configRes = http.get(BASE_URL + "/setting" + TEAM_TOKEN);
         if (!configRes.ok()) {
             std::cerr << "Failed getting the map structure: " << configRes.statusCode
@@ -452,9 +444,6 @@ int main() {
         std::vector<int> agentTypes(n, 0);
         for (int i = 0; i < numSupply; ++i) agentTypes[i] = 1;
 
-        // HttpResponse typeRes = http.postJson(BASE_URL + "/agent",
-        //                                      serializeAgentTypes(agentTypes).dump(),
-        //                                      headers);
         HttpResponse typeRes = http.postJson(BASE_URL + "/agent" +TEAM_TOKEN,
                                              serializeAgentTypes(agentTypes).dump());
         if (!typeRes.ok()) {
@@ -463,8 +452,8 @@ int main() {
         while (!http.get(BASE_URL + TEAM_TOKEN).ok()) {}
 
         int error_day = -1;
+        std::set<int> brands;
         for (int day = 0; day < numDays; ++day) {
-            // HttpResponse dayRes = http.get(BASE_URL + "/", headers);
             HttpResponse dayRes = http.get(BASE_URL + TEAM_TOKEN);
             if (!dayRes.ok()) {
                 if (error_day != day) {
@@ -480,7 +469,6 @@ int main() {
                 continue;
             }
 
-            // サーバーが返した day を優先 (範囲外ならループ変数で代用)
             int d = (info.day >= 0 && info.day < numDays) ? info.day : day;
             int totalSteps = config.daySteps[d];
             double daySec = (d < (int)config.daySeconds.size()) ? config.daySeconds[d] : 10;
@@ -490,7 +478,7 @@ int main() {
                       << ", " << budgetSec << " seconds)" << std::endl;
 
             Map map = buildMap(config, info);
-            auto plans = solveDay(map, config, info, totalSteps, budgetSec);
+            auto plans = solveDay(map, config, info, totalSteps, budgetSec, brands);
 
             auto validation = validatePlans(map, info.agents, plans, totalSteps);
             if (!validation.valid) {
@@ -500,9 +488,6 @@ int main() {
                 for (size_t i = 0; i < info.agents.size(); ++i) { plans.push_back({ -totalSteps }); }
             }
 
-            // HttpResponse planRes = http.postJson(BASE_URL + "/",
-            //                                       serializeActionPlan(plans).dump(),
-            //                                       headers);
             HttpResponse planRes = http.postJson(BASE_URL + TEAM_TOKEN, serializeActionPlan(plans).dump());
             if (!planRes.ok()) {
                 std::cerr << "Day " << day << " failed sending actions array: " << planRes.statusCode

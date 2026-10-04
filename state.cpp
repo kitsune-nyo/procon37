@@ -6,7 +6,7 @@
 #define WAIT -1
 
 const double fuelPerMax = 0.3;
-const std::vector<double> evaluateWeight = {10000, 10000, 1, 100};
+const std::vector<double> evaluateWeight = {10000, 10000, 10000, 1, 100};
 
 class State {
 public:
@@ -37,7 +37,7 @@ public:
         }
     }
 
-    void collectUdon() {
+    void collectUdon(std::set<int>& brands) {
         for (Agent& agent: agentMgr.agents) {
             if (agent.kind == AgentKind::SUPPLY) continue;
             Spot* s = spotMgr.findAt(agent.pos);
@@ -46,6 +46,7 @@ public:
             if (canCollect) {
                 if (spotMgr.consume(s->pos)) {
                     udonSum++;
+                    brands.insert(s->brand);
                     udonBrand.insert(s->brand);
                     agent.visitedSpotPos.insert(s->pos);
                 }
@@ -55,7 +56,7 @@ public:
 };
 
 void evaluate(
-    State& state, Map& map, std::vector<ReverseDijkstraResult>& md, std::vector<ReverseDijkstraResult>& dd
+    State& state, Map& map, std::vector<ReverseDijkstraResult>& md, std::vector<ReverseDijkstraResult>& dd, std::set<int>& brands
 ) {
     double agentsToNearestSpotScore = 0;
     for (Agent& agent: state.agentMgr.agents) {
@@ -77,6 +78,7 @@ void evaluate(
 
     state.score = 0;
     std::vector<double> x = {
+        (double)brands.size(),
         (double)state.udonBrand.size(), 
         (double)state.udonSum,
         fuel,
@@ -133,7 +135,7 @@ std::vector<State> separate(
     return ret;
 }
 
-bool update(State& state, Map& map, int steps) {
+bool update(State& state, Map& map, int steps, std::set<int>& brands) {
     for (Agent& agent: state.agentMgr.agents) {
         if (agent.actions.empty()) return false;
     }
@@ -164,7 +166,7 @@ bool update(State& state, Map& map, int steps) {
     }
 
     state.applySupply();
-    state.collectUdon();
+    state.collectUdon(brands);
     state.step++;
 
     return true;
