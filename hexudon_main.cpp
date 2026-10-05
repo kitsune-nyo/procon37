@@ -32,8 +32,8 @@ using json = nlohmann::json;
 static const std::string BASE_URL   = "http://localhost:8080";
 static const std::string TEAM_TOKEN = "?token=token-p0";
 
-constexpr int    BEAM_WIDTH        = 2000;  // ビーム幅の上限
-constexpr double TIME_BUDGET_RATIO = 0.75;   // 1日(daySeconds)のうち探索に使ってよい割合
+constexpr int    BEAM_WIDTH        = 3000;  // ビーム幅の上限
+constexpr double TIME_BUDGET_RATIO = 0.65;   // 1日(daySeconds)のうち探索に使ってよい割合
 #pragma endregion
 
 // ============================================================
@@ -242,7 +242,7 @@ inline std::vector<std::vector<int>> solveDay(
         int remainingSteps = steps - s;
         if (remainingSteps > 0) {
             double target = std::max(0.0, budgetSec - now) / remainingSteps;
-            double ratio = std::min(4.0, target / stepSec * 0.9);
+            double ratio = std::min(4.0, target / stepSec);
             size_t w = static_cast<size_t>(std::max<double>(1.0, startSize * ratio));
             beamWidth = std::min<size_t>(BEAM_WIDTH, std::max<size_t>(1, w));
             while (states.size() > beamWidth) states.pop();
@@ -255,7 +255,7 @@ inline std::vector<std::vector<int>> solveDay(
     while (states.size() > 1) states.pop();
     State best = states.top();
 
-    std::cout << "  Searching result: brand=" << best.udonBrand.size()
+    std::cout << "  Searching result: brand=" << best.udonBrand.size() << " supply=" << best.agentMgr.supplyNum
               << " udon=" << best.udonSum
               << " score=" << best.score
               << " (searching " << elapsed() << " seconds, last beam width " << beamWidth << ")" << std::endl;
@@ -263,6 +263,102 @@ inline std::vector<std::vector<int>> solveDay(
     std::vector<std::vector<int>> plans;
     for (Agent& agent : best.agentMgr.agents) plans.push_back(compress(agent.history));
     return plans;
+}
+
+inline std::vector<int> agentsKind(
+    Map& map, const MatchConfig& config, int steps, double budgetSec, std::set<int>& brands
+) {
+    using Clock = std::chrono::steady_clock;
+    auto t0 = Clock::now();
+    auto elapsed = [&]() { return std::chrono::duration<double>(Clock::now() - t0).count(); };
+
+    // ---- スポット: うどんの在庫は毎日リセットされる ----
+    SpotManager spotMgr;
+    for (const auto& s : config.spots) spotMgr.placeSpot(s.brand, s.pos, s.stocks);
+
+    // ---- キャッシュ (渋滞状況に依存するので毎日計算) ----
+    std::vector<ReverseDijkstraResult> mapDijkstra;
+    mapDijkstra.reserve(map.cells.size());
+    for (int i = 0; i < (int)map.cells.size(); i++) mapDijkstra.push_back(map.reverseDijkstra(i));
+    // dropDijkstra は現在の evaluate / separate では使われていないので空のまま渡す
+    std::vector<ReverseDijkstraResult> dropDijkstra;
+
+    // ---- エージェント: 位置・燃料・種別はサーバーの値を使う ----
+    AgentManager agentMgr;
+    agentMgr.fuel = config.fuelLimits;
+    for (size_t i = 0; i < config.agents.size(); ++i) agentMgr.placeAgent(config.agents[i], config.fuelLimits);
+
+    // ---- ビームサーチ ----
+    size_t beamWidth = BEAM_WIDTH;
+    std::priority_queue<State, std::vector<State>, std::greater<State>> states;
+    for (int i = config.agents.size() / 3; i <= config.agents.size() / 2; i++) {
+        for (int j = 0; j < (1 << config.agents.size()); j++) {
+            std::vector<int> k;
+            int agt = 0;
+            int num = j;
+            int check = (1 << (config.agents.size() - 1));
+            while (num != 0) {
+                if (num - check >= 0) {
+                    num -= check;
+                    k.push_back(1);
+                    agt++;
+                } else k.push_back(0);
+                check /= 2;
+            }
+            if (agt == i) {
+                for (int l = 0; l < k.size(); l++) {
+                    if (k[l] == 1) agentMgr.decideSupply(l);
+                }
+                states.push(State(spotMgr, agentMgr));
+            }
+        }
+    }
+
+    for (int s = 1; s <= steps; s++) {
+        double stepStart = elapsed();
+        size_t startSize = states.size();
+
+        while (!states.empty() && states.top().step < s) {
+            State state = states.top();
+            states.pop();
+            std::vector<State> newStates = separate(state, map, mapDijkstra, dropDijkstra);
+            if (update(state, map, steps, brands)) states.push(state);
+            for (State& next : newStates) {
+                evaluate(next, map, mapDijkstra, dropDijkstra, brands);
+                states.push(next);
+            }
+        }
+        while (states.size() > beamWidth) states.pop();
+        if (states.empty()) break;
+
+        // 残り時間から1ステップあたりに使える時間を割り出し、ビーム幅を増減する
+        // (処理した状態数あたりの所要時間は大きく変わらない、という近似)
+        double now = elapsed();
+        double stepSec = std::max(now - stepStart, 1e-6);
+        int remainingSteps = steps - s;
+        if (remainingSteps > 0) {
+            double target = std::max(0.0, budgetSec - now) / remainingSteps;
+            double ratio = std::min(4.0, target / stepSec);
+            size_t w = static_cast<size_t>(std::max<double>(1.0, startSize * ratio));
+            beamWidth = std::min<size_t>(BEAM_WIDTH, std::max<size_t>(1, w));
+            while (states.size() > beamWidth) states.pop();
+        }
+    }
+
+    if (states.empty()) return {};
+
+    // 一番スコアの高い状態だけ残す
+    while (states.size() > 1) states.pop();
+    State best = states.top();
+
+    std::cout << "  Searching result: brand=" << best.udonBrand.size() << " supply=" << best.agentMgr.supplyNum
+              << " udon=" << best.udonSum
+              << " score=" << best.score
+              << " (searching " << elapsed() << " seconds, last beam width " << beamWidth << ")" << std::endl;
+
+    std::vector<int> ret;
+    for (auto& i : best.agentMgr.agents) ret.push_back(i.kind == AgentKind::SUPPLY ? 1 : 0);
+    return ret;
 }
 #pragma endregion
 
@@ -438,11 +534,21 @@ int main() {
         MatchConfig config = parseMatchConfig(json::parse(configRes.body));
         int numDays = static_cast<int>(config.daySteps.size());
 
-        // ---- エージェントの役割決定 (先頭から補給役。1台しかいないときは全員パトロール) ----
+        // ---- エージェントの役割決定----
         int n = config.agents.size();
-        int numSupply = (n >= 2) ? std::max(1, n / 4) : 0;
-        std::vector<int> agentTypes(n, 0);
-        for (int i = 0; i < numSupply; ++i) agentTypes[i] = 1;
+        int numSupply = n / 2;
+
+        int st = config.daySteps[0];
+        std::time_t ds = config.startsAt - std::time(nullptr);
+        double bs = ds * TIME_BUDGET_RATIO;
+
+        std::cout << "Started searching agents types (steps=" << st
+                    << ", " << bs << " seconds)" << std::endl;
+
+        DayInfo tmp;
+        std::set<int> b;
+        Map mp = buildMap(config, tmp);
+        auto agentTypes = agentsKind(mp, config, st, bs, b);
 
         HttpResponse typeRes = http.postJson(BASE_URL + "/agent" +TEAM_TOKEN,
                                              serializeAgentTypes(agentTypes).dump());
