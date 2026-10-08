@@ -1,21 +1,21 @@
 
 // 第37回 全国高等専門学校 プログラミングコンテスト
-// 競技部門「ヘキサうどん」通信クライアント + ビームサーチ (統合版)
+// 競技部門「ヘキサうどん」回答用プログラム
 //
-// 構成:
+// ファイル構成:
 //   hexudon_main.cpp ... このファイル (通信 + 日ごとの探索呼び出し + main)
 //   state.cpp ... 探索 (State / evaluate / separate / update)
 //   map.cpp / spot.cpp / agent.cpp ... state.cpp から #include される
 //
-// ビルド方法:
+// コンパイル方法:
 //   https://github.com/nlohmann/json/releases から json.hpp をDL
 //   g++ -std=c++17 -O2 hexudon_main.cpp -lcurl -o hexudon_main
 //
-// 注意:
+// 注意事項:
 //   2. setting の BASE_URL と TEAM_TOKEN は変更
 
 // ========================================================================
-// 1. including
+// 0. including
 // ========================================================================
 #pragma region including
 
@@ -35,7 +35,7 @@ using json = nlohmann::json;
 #pragma endregion
 
 // ========================================================================
-// 2. setting
+// 1. setting
 // ========================================================================
 #pragma region setting
 
@@ -51,7 +51,7 @@ constexpr double TIME_BUDGET_RATIO = 0.65; // 1日(daySeconds)のうち探索に
 #pragma endregion
 
 // ========================================================================
-// 3. protocol
+// 2. protocol
 // ========================================================================
 #pragma region protocol
 
@@ -141,7 +141,7 @@ void from_json(const json& j, DayInfo& in) {
 #pragma endregion
 
 // ========================================================================
-// 4. solver
+// 3. solver
 // ========================================================================
 #pragma region solver
 
@@ -359,59 +359,7 @@ inline std::vector<int> agentsKind(const MatchConfig& config) {
 #pragma endregion
 
 // ========================================================================
-// 5. validator
-// ========================================================================
-#pragma region validator
-
-struct ValidationResult {
-    bool valid;
-    std::string errorMessage;
-};
-
-inline ValidationResult validateAgentPlan(Map& map, const AgentState& agent,
-                                          const std::vector<int>& plan, int totalSteps) {
-    int pos = agent.pos;
-    int stepsUsed = 0;
-
-    for (int action : plan) {
-        if (action < 0) {
-            stepsUsed += -action;
-        } else if (action <= 5) {
-            int npos = map.getNeighbor(pos, static_cast<Direction>(action));
-            if (npos == -1) return {false, "Being assigned moving out of the map"};
-            if (map.terrainAt(npos) == Terrain::POND) return {false, "Being assigned moving the pond"};
-            if (map.terrainAt(pos) == Terrain::POND) return {false, "Being assigned moving from the pond"};
-
-            stepsUsed += map.getMoveCost(pos).time;
-            pos = npos;
-        } else {
-            return {false, "Action value is illigal"};
-        }
-
-        if (stepsUsed > totalSteps) return {false, "Step count is over the maximum of the day"};
-    }
-
-    if (stepsUsed != totalSteps) return {false, "Step count is not equal the step count of the day"};
-    return {true, ""};
-}
-
-inline ValidationResult validatePlans(Map& map, const std::vector<AgentState>& agents,
-                                      const std::vector<std::vector<int>>& plans, int totalSteps) {
-    if (plans.size() != agents.size())
-        return {false, "Agents sum is not equal to actions array length"};
-
-    for (size_t i = 0; i < plans.size(); ++i) {
-        auto result = validateAgentPlan(map, agents[i], plans[i], totalSteps);
-        if (!result.valid)
-            return {false, "Agent " + std::to_string(i) + ": " + result.errorMessage};
-    }
-    return {true, ""};
-}
-
-#pragma endregion
-
-// ========================================================================
-// 6. http
+// 4. http
 // ========================================================================
 #pragma region http
 
@@ -494,7 +442,7 @@ std::string post_actions(const std::vector<std::vector<int>>& plans, long timeou
 #pragma endregion
 
 // ========================================================================
-// 7. main
+// 5. main
 // ========================================================================
 #pragma region main
 
@@ -542,14 +490,6 @@ int main() {
 
             Map map = buildMap(config, info);
             std::vector<std::vector<int>> plans = solveDay(map, config, info, totalSteps, budgetSec, brands);
-
-            ValidationResult validation = validatePlans(map, info.agents, plans, totalSteps);
-            if (!validation.valid) {
-                std::cerr << "The action array is so illigal that all agents actions changed waiting as the fallback: "
-                          << validation.errorMessage << std::endl;
-                plans.clear();
-                for (size_t i = 0; i < info.agents.size(); ++i) { plans.push_back({ -totalSteps }); }
-            }
 
             post_actions(plans);
         }

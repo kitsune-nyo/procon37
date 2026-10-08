@@ -9,6 +9,7 @@ struct Agent {
     std::queue<int> actions;
     std::vector<int> history;
     std::set<int> visitedSpotPos;
+    int nextPos = -1, nextFuel = -1, moveEndStep = -1;;
 };
 
 class AgentManager {

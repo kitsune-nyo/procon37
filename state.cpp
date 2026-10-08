@@ -136,33 +136,47 @@ std::vector<State> separate(
 }
 
 bool update(State& state, Map& map, int steps, std::set<int>& brands) {
-    for (Agent& agent: state.agentMgr.agents) {
+    for (Agent& agent : state.agentMgr.agents) {
         if (agent.actions.empty()) return false;
     }
 
-    for (Agent& agent: state.agentMgr.agents) {
+    for (Agent& agent : state.agentMgr.agents) {
         if (agent.history.size() < state.step + 1) agent.history.push_back(WAIT);
+
+        if (agent.nextPos != -1 && state.step == agent.moveEndStep) {
+            if (agent.kind == AgentKind::PATROL) agent.fuel -= agent.nextFuel;
+            agent.pos = agent.nextPos;
+            agent.nextPos = -1;
+            agent.nextFuel = 0;
+            agent.moveEndStep = -1;
+        }
+
+        if (agent.nextPos != -1) {
+            agent.history[state.step] = INACTION;
+            continue;
+        }
+
         int nextPos = agent.actions.front();
 
         if (nextPos == WAIT) {
-            if (agent.history[state.step] == INACTION) continue;
             agent.history[state.step] = WAIT;
             agent.actions.pop();
             continue;
         }
 
-        if (state.step == 0 || agent.history[state.step] != INACTION) {
-            MoveCost cost = map.getMoveCost(agent.pos);
-            if (steps - state.step < cost.time) {
-                agent.history[state.step] = WAIT;
-                continue;
-            }
-            else agent.history[state.step] = map.getDirection(agent.pos, nextPos);
-            agent.pos = nextPos;
-            if (agent.kind == AgentKind::PATROL) agent.fuel -= cost.fuel;
-            for (int j = 1; j < cost.time; j++) agent.history.push_back(INACTION); 
-            agent.actions.pop();
+        MoveCost cost = map.getMoveCost(agent.pos);
+
+        if (state.step + cost.time > steps) {
+            agent.history[state.step] = WAIT;
+            continue;
         }
+
+        agent.history[state.step] = map.getDirection(agent.pos, nextPos);
+
+        agent.nextPos = nextPos;
+        agent.nextFuel = cost.fuel;
+        agent.moveEndStep = state.step + cost.time;
+        agent.actions.pop();
     }
 
     state.applySupply();
