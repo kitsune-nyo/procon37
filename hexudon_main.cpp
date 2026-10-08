@@ -1,84 +1,84 @@
-// ============================================================
+
 // 第37回 全国高等専門学校 プログラミングコンテスト
 // 競技部門「ヘキサうどん」通信クライアント + ビームサーチ (統合版)
 //
 // 構成:
-//   hexudon_main.cpp  ... このファイル (通信 + 日ごとの探索呼び出し + main)
-//   state.cpp         ... 探索 (State / evaluate / separate / update)
+//   hexudon_main.cpp ... このファイル (通信 + 日ごとの探索呼び出し + main)
+//   state.cpp ... 探索 (State / evaluate / separate / update)
 //   map.cpp / spot.cpp / agent.cpp ... state.cpp から #include される
 //
 // ビルド方法:
-//   g++ -std=c++17 -O2 hexudon_main.cpp -lcurl -o hexudon_main
 //   https://github.com/nlohmann/json/releases から json.hpp をDL
-// ============================================================
+//   g++ -std=c++17 -O2 hexudon_main.cpp -lcurl -o hexudon_main
+//
+// 注意:
+//   2. setting の BASE_URL と TEAM_TOKEN は変更
+
+// ========================================================================
+// 1. including
+// ========================================================================
 #pragma region including
-// ※ state.cpp が #define WAIT / BIG などを定義するので、
-//    外部ライブラリのincludeは必ずその前に書くこと
 
 #include <iostream>
+#include <vector>
+#include <string>
+#include <stdexcept>
+#include <thread>
 #include <curl/curl.h>
+#include <nlohmann/json.hpp>
 
 #include "json.hpp"
 #include "state.cpp"
 
 using json = nlohmann::json;
+
 #pragma endregion
 
-// ============================================================
-// 設定値
-// TODO: BASE_URL / TEAM_TOKEN は公式サイト公開後に実値へ差し替え
-// ============================================================
+// ========================================================================
+// 2. setting
+// ========================================================================
 #pragma region setting
-static const std::string BASE_URL   = "http://localhost:8080";
-static const std::string TEAM_TOKEN = "?token=token-p0";
 
-constexpr int    BEAM_WIDTH        = 3000;  // ビーム幅の上限
-constexpr double TIME_BUDGET_RATIO = 0.65;   // 1日(daySeconds)のうち探索に使ってよい割合
+static const std::string BASE_URL     = "http://localhost:8080";
+static const std::string TEAM_TOKEN   = "?token=token-p0";
+static const std::string SETTING_PATH = "/setting";
+static const std::string AGENT_PATH   = "/agent";
+static const std::string PROBLEM_PATH = "/";
+
+constexpr int    BEAM_WIDTH        = 3000; // ビーム幅の上限
+constexpr double TIME_BUDGET_RATIO = 0.65; // 1日(daySeconds)のうち探索に使ってよい割合
+
 #pragma endregion
 
-// ============================================================
-// 1. protocol : サーバーとのJSONフォーマット変換
-// ============================================================
+// ========================================================================
+// 3. protocol
+// ========================================================================
 #pragma region protocol
-struct SpotConfig {
-    int brand;
-    int pos;
-    int stocks;
-};
+
+struct SpotConfig { int brand, pos, stocks; };
+
+struct AgentState { int kind, pos, fuel; };
+
+struct TrafficInfo { int pos, status; };
 
 struct MapData {
-    int height;
-    int width;
+    int height, width;
     std::vector<std::vector<int>> cells;
 };
 
 struct MatchConfig {
     long long startsAt;
-    std::vector<int> daySeconds;
-    std::vector<int> daySteps;
+    std::vector<int> daySeconds ,daySteps;
     MapData map;
     std::vector<SpotConfig> spots;
     std::vector<int> agents;
-    int fuelLimits;
-    int players;
-    int busyThreshold;
-    int jammedThreshold;
-};
-
-struct AgentState {
-    int kind;   // 0: パトロール, 1: 補給
-    int pos;
-    int fuel;
+    int fuelLimits, players;
+    int busyThreshold, jammedThreshold;
 };
 
 struct OtherTeam {
     int id;
     std::vector<AgentState> agents;
-};
-
-struct TrafficInfo {
-    int pos;
-    int status;
 };
 
 struct DayInfo {
@@ -89,74 +89,62 @@ struct DayInfo {
     std::vector<TrafficInfo> traffics;
 };
 
-inline MatchConfig parseMatchConfig(const json& j) {
-    MatchConfig c;
-    // 公式サンプルは "startAt"。念のため "startsAt" も受け付ける (使っていない項目なので無くても可)
-    c.startsAt = j.value("startAt", j.value("startsAt", 0LL));
-    c.daySeconds = j.at("daySeconds").get<std::vector<int>>();
-    c.daySteps = j.at("daySteps").get<std::vector<int>>();
-
-    const auto& mapJson = j.at("map");
-    c.map.height = mapJson.at("height").get<int>();
-    c.map.width = mapJson.at("width").get<int>();
-    c.map.cells = mapJson.at("cells").get<std::vector<std::vector<int>>>();
-
-    for (const auto& s : j.at("spots")) {
-        SpotConfig spot;
-        spot.brand = s.at("brand").get<int>();
-        spot.pos = s.at("pos").get<int>();
-        spot.stocks = s.at("stocks").get<int>();
-        c.spots.push_back(spot);
-    }
-
-    c.agents = j.at("agents").get<std::vector<int>>();
-    c.fuelLimits = j.at("fuelLimits").get<int>();
-    c.players = j.at("players").get<int>();
-    c.busyThreshold = j.at("busyThreshold").get<int>();
-    c.jammedThreshold = j.at("jammedThreshold").get<int>();
-    return c;
+void from_json(const json& j, MapData& m) {
+    m.height = j.at("height").get<int>();
+    m.width  = j.at("width").get<int>();
+    m.cells  = j.at("cells").get<std::vector<std::vector<int>>>();
 }
 
-inline AgentState parseAgentState(const json& j) {
-    AgentState a;
+void from_json(const json& j, SpotConfig& s) {
+    s.brand  = j.at("brand").get<int>();
+    s.pos    = j.at("pos").get<int>();
+    s.stocks = j.at("stocks").get<int>();
+}
+
+void from_json(const json& j, MatchConfig& in) {
+    in.startsAt        = j.at("startsAt").get<long long>();
+    in.daySeconds      = j.at("daySeconds").get<std::vector<int>>();
+    in.daySteps        = j.at("daySteps").get<std::vector<int>>();
+    in.map             = j.at("map").get<MapData>();
+    in.spots           = j.at("spots").get<std::vector<SpotConfig>>();
+    in.agents          = j.at("agents").get<std::vector<int>>();
+    in.fuelLimits      = j.at("fuelLimits").get<int>();
+    in.players         = j.at("players").get<int>();
+    in.busyThreshold   = j.at("busyThreshold").get<int>();
+    in.jammedThreshold = j.at("jammedThreshold").get<int>();
+}
+
+void from_json(const json& j, AgentState& a) {
     a.kind = j.at("kind").get<int>();
-    a.pos = j.at("pos").get<int>();
+    a.pos  = j.at("pos").get<int>();
     a.fuel = j.at("fuel").get<int>();
-    return a;
 }
 
-inline DayInfo parseDayInfo(const json& j) {
-    DayInfo d;
-    d.endsAt = j.at("endsAt").get<long long>();
-    d.day = j.at("day").get<int>();
-
-    for (const auto& a : j.at("agents")) d.agents.push_back(parseAgentState(a));
-
-    for (const auto& o : j.at("others")) {
-        OtherTeam team;
-        team.id = o.at("id").get<int>();
-        for (const auto& a : o.at("agents")) team.agents.push_back(parseAgentState(a));
-        d.others.push_back(team);
-    }
-
-    for (const auto& t : j.at("traffics")) {
-        TrafficInfo info;
-        info.pos = t.at("pos").get<int>();
-        info.status = t.at("status").get<int>();
-        d.traffics.push_back(info);
-    }
-
-    return d;
+void from_json(const json& j, OtherTeam& o) {
+    o.id     = j.at("id").get<int>();
+    o.agents = j.at("agents").get<std::vector<AgentState>>();
 }
 
-inline json serializeAgentTypes(const std::vector<int>& types) { return json(types); }
-inline json serializeActionPlan(const std::vector<std::vector<int>>& plan) { return json(plan); }
+void from_json(const json& j, TrafficInfo& t) {
+    t.pos    = j.at("pos").get<int>();
+    t.status = j.at("status").get<int>();
+}
+
+void from_json(const json& j, DayInfo& in) {
+    in.endsAt   = j.at("endsAt").get<long long>();
+    in.day      = j.at("day").get<int>();
+    in.agents   = j.at("agents").get<std::vector<AgentState>>();
+    in.others   = j.at("others").get<std::vector<OtherTeam>>();
+    in.traffics = j.at("traffics").get<std::vector<TrafficInfo>>();
+}
+
 #pragma endregion
 
-// ============================================================
-// 2. solver : サーバーの情報 -> アルゴリズムの入力 -> 行動計画
-// ============================================================
+// ========================================================================
+// 4. solver
+// ========================================================================
 #pragma region solver
+
 // historyを「方向 or まとめた待機(負の値)」の列に変換する (サーバーへ送る形式)
 inline std::vector<int> compress(const std::vector<int>& v) {
     std::vector<int> ret;
@@ -194,37 +182,38 @@ inline std::vector<std::vector<int>> solveDay(
     auto t0 = Clock::now();
     auto elapsed = [&]() { return std::chrono::duration<double>(Clock::now() - t0).count(); };
 
-    // ---- スポット: うどんの在庫は毎日リセットされる ----
+    // スポット
     SpotManager spotMgr;
-    for (const auto& s : config.spots) spotMgr.placeSpot(s.brand, s.pos, s.stocks);
+    for (const SpotConfig& s : config.spots) spotMgr.placeSpot(s.brand, s.pos, s.stocks);
 
-    // ---- エージェント: 位置・燃料・種別はサーバーの値を使う ----
+    // エージェント
     AgentManager agentMgr;
     agentMgr.fuel = config.fuelLimits;
     for (size_t i = 0; i < info.agents.size(); ++i) {
         agentMgr.placeAgent(info.agents[i].pos, info.agents[i].fuel);
-        if (info.agents[i].kind == 1) agentMgr.decideSupply(static_cast<int>(i));
+        if (info.agents[i].kind == 1) agentMgr.decideSupply((int)i);
     }
 
-    // ---- キャッシュ (渋滞状況に依存するので毎日計算) ----
+    // キャッシュ
     std::vector<ReverseDijkstraResult> mapDijkstra;
     mapDijkstra.reserve(map.cells.size());
     for (int i = 0; i < (int)map.cells.size(); i++) mapDijkstra.push_back(map.reverseDijkstra(i));
     // dropDijkstra は現在の evaluate / separate では使われていないので空のまま渡す
     std::vector<ReverseDijkstraResult> dropDijkstra;
 
-    // ---- ビームサーチ ----
+    // ビームサーチ
     size_t beamWidth = BEAM_WIDTH;
     std::priority_queue<State, std::vector<State>, std::greater<State>> states;
     states.push(State(spotMgr, agentMgr));
 
     for (int s = 1; s <= steps; s++) {
         double stepStart = elapsed();
-        size_t startSize = states.size();
+        size_t processedStates = 0;
 
         while (!states.empty() && states.top().step < s) {
             State state = states.top();
             states.pop();
+            processedStates++;
             std::vector<State> newStates = separate(state, map, mapDijkstra, dropDijkstra);
             if (update(state, map, steps, brands)) states.push(state);
             for (State& next : newStates) {
@@ -238,20 +227,22 @@ inline std::vector<std::vector<int>> solveDay(
         // 残り時間から1ステップあたりに使える時間を割り出し、ビーム幅を増減する
         // (処理した状態数あたりの所要時間は大きく変わらない、という近似)
         double now = elapsed();
-        double stepSec = std::max(now - stepStart, 1e-6);
+        double secPerState = (processedStates > 0) ? (now - stepStart) / processedStates : 1e-6;
         int remainingSteps = steps - s;
         if (remainingSteps > 0) {
-            double target = std::max(0.0, budgetSec - now) / remainingSteps;
-            double ratio = std::min(4.0, target / stepSec);
-            size_t w = static_cast<size_t>(std::max<double>(1.0, startSize * ratio));
-            beamWidth = std::min<size_t>(BEAM_WIDTH, std::max<size_t>(1, w));
-            while (states.size() > beamWidth) states.pop();
+            double targetSec = std::max(0.0, budgetSec - now) / remainingSteps;
+            size_t targetWidth = std::clamp<size_t>(targetSec / secPerState, 1, BEAM_WIDTH);
+            beamWidth = std::clamp<size_t>(
+                targetWidth,
+                std::max<size_t>(1, beamWidth * 8 / 10),
+                std::min<size_t>(BEAM_WIDTH, beamWidth * 12 / 10)
+            );
         }
     }
 
     if (states.empty()) return {};
 
-    // 一番スコアの高い状態だけ残す
+    // ベスト
     while (states.size() > 1) states.pop();
     State best = states.top();
 
@@ -265,30 +256,37 @@ inline std::vector<std::vector<int>> solveDay(
     return plans;
 }
 
-inline std::vector<int> agentsKind(
-    Map& map, const MatchConfig& config, int steps, double budgetSec, std::set<int>& brands
-) {
+inline std::vector<int> agentsKind(const MatchConfig& config) {
     using Clock = std::chrono::steady_clock;
     auto t0 = Clock::now();
     auto elapsed = [&]() { return std::chrono::duration<double>(Clock::now() - t0).count(); };
 
-    // ---- スポット: うどんの在庫は毎日リセットされる ----
-    SpotManager spotMgr;
-    for (const auto& s : config.spots) spotMgr.placeSpot(s.brand, s.pos, s.stocks);
+    int numSupply = config.agents.size() / 2;
 
-    // ---- キャッシュ (渋滞状況に依存するので毎日計算) ----
+    int steps = config.daySteps[0];
+    std::time_t ds = config.startsAt - std::time(nullptr);
+    double budgetSec = ds * TIME_BUDGET_RATIO;
+
+    std::cout << "Started searching agents types (steps=" << steps
+                << ", " << budgetSec << " seconds)" << std::endl;
+
+    DayInfo tmp;
+    std::set<int> brands;
+    Map map = buildMap(config, tmp);
+
+    SpotManager spotMgr;
+    for (const SpotConfig& s : config.spots) spotMgr.placeSpot(s.brand, s.pos, s.stocks);
+
     std::vector<ReverseDijkstraResult> mapDijkstra;
     mapDijkstra.reserve(map.cells.size());
     for (int i = 0; i < (int)map.cells.size(); i++) mapDijkstra.push_back(map.reverseDijkstra(i));
     // dropDijkstra は現在の evaluate / separate では使われていないので空のまま渡す
     std::vector<ReverseDijkstraResult> dropDijkstra;
 
-    // ---- エージェント: 位置・燃料・種別はサーバーの値を使う ----
     AgentManager agentMgr;
     agentMgr.fuel = config.fuelLimits;
     for (size_t i = 0; i < config.agents.size(); ++i) agentMgr.placeAgent(config.agents[i], config.fuelLimits);
 
-    // ---- ビームサーチ ----
     size_t beamWidth = BEAM_WIDTH;
     std::priority_queue<State, std::vector<State>, std::greater<State>> states;
     for (int i = config.agents.size() / 3; i <= config.agents.size() / 2; i++) {
@@ -331,8 +329,6 @@ inline std::vector<int> agentsKind(
         while (states.size() > beamWidth) states.pop();
         if (states.empty()) break;
 
-        // 残り時間から1ステップあたりに使える時間を割り出し、ビーム幅を増減する
-        // (処理した状態数あたりの所要時間は大きく変わらない、という近似)
         double now = elapsed();
         double stepSec = std::max(now - stepStart, 1e-6);
         int remainingSteps = steps - s;
@@ -347,7 +343,6 @@ inline std::vector<int> agentsKind(
 
     if (states.empty()) return {};
 
-    // 一番スコアの高い状態だけ残す
     while (states.size() > 1) states.pop();
     State best = states.top();
 
@@ -360,14 +355,14 @@ inline std::vector<int> agentsKind(
     for (auto& i : best.agentMgr.agents) ret.push_back(i.kind == AgentKind::SUPPLY ? 1 : 0);
     return ret;
 }
+
 #pragma endregion
 
-// ============================================================
-// 3. validator : 行動計画の事前検証
-//   構造のみ検証する (範囲外・池・ステップ合計)。
-//   補給による燃料回復は探索側が考慮済みなので、ここでは燃料残量は見ない。
-// ============================================================
+// ========================================================================
+// 5. validator
+// ========================================================================
 #pragma region validator
+
 struct ValidationResult {
     bool valid;
     std::string errorMessage;
@@ -412,181 +407,143 @@ inline ValidationResult validatePlans(Map& map, const std::vector<AgentState>& a
     }
     return {true, ""};
 }
+
 #pragma endregion
 
-// ============================================================
-// 4. http_client : libcurlを使ったHTTP通信
-// ============================================================
-#pragma region http_client
-struct HttpResponse {
-    long statusCode = 0;
+// ========================================================================
+// 6. http
+// ========================================================================
+#pragma region http
+
+static size_t write_cb(char* ptr, size_t size, size_t nmemb, void* userdata) {
+    auto* buf = static_cast<std::string*>(userdata);
+    buf->append(ptr, size * nmemb);
+    return size * nmemb;
+}
+
+std::string http_get(const std::string& url, long timeout_sec = 15) {
+    CURL* curl = curl_easy_init();
+    if (!curl) throw std::runtime_error("curl_easy_init failed");
+
     std::string body;
-    bool ok() const { return statusCode >= 200 && statusCode < 300; }
-};
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "field-client/1.0");
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout_sec);
 
-class HttpClient {
-public:
-    HttpClient() { curl_global_init(CURL_GLOBAL_DEFAULT); }
-    ~HttpClient() { curl_global_cleanup(); }
-
-    HttpResponse get(const std::string& url,
-                      const std::map<std::string, std::string>& headers = {}) {
-        HttpResponse res;
-        CURL* curl = curl_easy_init();
-        if (!curl) throw std::runtime_error("curl_easy_init failed");
-
-        struct curl_slist* headerList = nullptr;
-        for (const auto& [k, v] : headers) {
-            std::string h = k + ": " + v;
-            headerList = curl_slist_append(headerList, h.c_str());
-        }
-
-        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, &HttpClient::writeCallback);
-        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &res.body);
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeoutSec_);
-        if (headerList) curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headerList);
-
-        CURLcode code = curl_easy_perform(curl);
-        if (code != CURLE_OK) {
-            curl_slist_free_all(headerList);
-            curl_easy_cleanup(curl);
-            throw std::runtime_error(std::string("curl GET failed: ") + curl_easy_strerror(code));
-        }
-
-        long httpCode = 0;
-        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpCode);
-        res.statusCode = httpCode;
-
-        curl_slist_free_all(headerList);
+    CURLcode rc = curl_easy_perform(curl);
+    if (rc != CURLE_OK) {
+        std::string msg = std::string("curl GET error: ") + curl_easy_strerror(rc);
         curl_easy_cleanup(curl);
-        return res;
+        throw std::runtime_error(msg);
     }
+    long code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
+    curl_easy_cleanup(curl);
+    if (code < 200 || code >= 300) throw std::runtime_error("HTTP GET status " + std::to_string(code));
+    return body;
+}
 
-    HttpResponse postJson(const std::string& url,
-                          const std::string& jsonBody,
-                          const std::map<std::string, std::string>& headers = {}) {
-        HttpResponse res;
-        CURL* curl = curl_easy_init();
-        if (!curl) throw std::runtime_error("curl_easy_init failed");
+json get(const std::string& path) {
+    const std::string fullURL = BASE_URL + path + TEAM_TOKEN;
+    std::string text = http_get(fullURL);
+    return json::parse(text);
+}
 
-        struct curl_slist* headerList = nullptr;
-        headerList = curl_slist_append(headerList, "Content-Type: application/json");
-        for (const auto& [k, v] : headers) {
-            std::string h = k + ": " + v;
-            headerList = curl_slist_append(headerList, h.c_str());
-        }
+std::string post_json(const json& body_json, const std::string& url, long timeout_sec = 15) {
+    CURL* curl = curl_easy_init();
+    if (!curl) throw std::runtime_error("curl_easy_init failed");
 
-        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-        curl_easy_setopt(curl, CURLOPT_POST, 1L);
-        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, jsonBody.c_str());
-        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)jsonBody.size());
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, &HttpClient::writeCallback);
-        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &res.body);
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeoutSec_);
-        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headerList);
+    std::string resp;
+    std::string body = body_json.dump();
 
-        CURLcode code = curl_easy_perform(curl);
-        if (code != CURLE_OK) {
-            curl_slist_free_all(headerList);
-            curl_easy_cleanup(curl);
-            throw std::runtime_error(std::string("curl POST failed: ") + curl_easy_strerror(code));
-        }
+    curl_slist* headers = nullptr;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
 
-        long httpCode = 0;
-        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpCode);
-        res.statusCode = httpCode;
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_POST, 1L);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout_sec);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
 
-        curl_slist_free_all(headerList);
-        curl_easy_cleanup(curl);
-        return res;
-    }
+    CURLcode rc = curl_easy_perform(curl);
+    long code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
 
-    void setTimeout(long seconds) { timeoutSec_ = seconds; }
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
 
-private:
-    long timeoutSec_ = 10;
+    if (rc != CURLE_OK) throw std::runtime_error(curl_easy_strerror(rc));
+    if (code < 200 || code >= 300) throw std::runtime_error("HTTP POST failed: status=" + std::to_string(code) + " body=" + resp);
 
-    static size_t writeCallback(void* contents, size_t size, size_t nmemb, void* userp) {
-        size_t totalSize = size * nmemb;
-        std::string* buf = static_cast<std::string*>(userp);
-        buf->append(static_cast<char*>(contents), totalSize);
-        return totalSize;
-    }
-};
+    return resp;
+}
+
+std::string post_agent_types(const std::vector<int>& types, long timeout_sec = 15) {
+    return post_json(json(types), BASE_URL + AGENT_PATH + TEAM_TOKEN, timeout_sec);
+}
+
+std::string post_actions(const std::vector<std::vector<int>>& plans, long timeout_sec = 15) {
+    return post_json(json(plans), BASE_URL + PROBLEM_PATH + TEAM_TOKEN, timeout_sec);
+}
+
 #pragma endregion
 
-// ============================================================
-// 5. main : 実行エントリーポイント
-// ============================================================
+// ========================================================================
+// 7. main
+// ========================================================================
+#pragma region main
+
+DayInfo getDayInfo(int day) {
+    DayInfo ret;
+    std::string error = "HTTP GET status 403";
+    while (true) {
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(250)
+        );
+        try {
+            json d = get(PROBLEM_PATH);
+            ret = d.get<DayInfo>();
+            if (day == ret.day) break;
+        } catch (const std::exception& e) {
+            if (error != e.what()) {
+                error = e.what();
+                std::cout << e.what() << std::endl;
+            }
+        }
+    }
+    return ret;
+}
+
 int main() {
     try {
-        HttpClient http;
-        http.setTimeout(10);
+        json problem = get(SETTING_PATH);
+        MatchConfig config = problem.get<MatchConfig>();
 
-        // ---- 試合設定の取得 ----
-        HttpResponse configRes = http.get(BASE_URL + "/setting" + TEAM_TOKEN);
-        if (!configRes.ok()) {
-            std::cerr << "Failed getting the map structure: " << configRes.statusCode
-                      << "\n" << configRes.body << std::endl;
-            return 1;
-        }
-        MatchConfig config = parseMatchConfig(json::parse(configRes.body));
-        int numDays = static_cast<int>(config.daySteps.size());
+        std::vector<int> agentTypes = agentsKind(config);
+        post_agent_types(agentTypes);
 
-        // ---- エージェントの役割決定----
-        int n = config.agents.size();
-        int numSupply = n / 2;
-
-        int st = config.daySteps[0];
-        std::time_t ds = config.startsAt - std::time(nullptr);
-        double bs = ds * TIME_BUDGET_RATIO;
-
-        std::cout << "Started searching agents types (steps=" << st
-                    << ", " << bs << " seconds)" << std::endl;
-
-        DayInfo tmp;
-        std::set<int> b;
-        Map mp = buildMap(config, tmp);
-        auto agentTypes = agentsKind(mp, config, st, bs, b);
-
-        HttpResponse typeRes = http.postJson(BASE_URL + "/agent" +TEAM_TOKEN,
-                                             serializeAgentTypes(agentTypes).dump());
-        if (!typeRes.ok()) {
-            std::cerr << "Failed to send agent type: " << typeRes.statusCode << "\n" << typeRes.body << std::endl;
-        }
-        while (!http.get(BASE_URL + TEAM_TOKEN).ok()) {}
-
-        int error_day = -1;
         std::set<int> brands;
-        for (int day = 0; day < numDays; ++day) {
-            HttpResponse dayRes = http.get(BASE_URL + TEAM_TOKEN);
-            if (!dayRes.ok()) {
-                if (error_day != day) {
-                    std::cerr << "Day " << day << " failed getting contents: " << dayRes.statusCode << std::endl;
-                    error_day = day;
-                }
-                day--;
-                continue;
-            }
-            DayInfo info = parseDayInfo(json::parse(dayRes.body));
-            if (info.day < day) {
-                day--;
-                continue;
-            }
+        int numDays = (int)config.daySteps.size();
 
-            int d = (info.day >= 0 && info.day < numDays) ? info.day : day;
-            int totalSteps = config.daySteps[d];
-            double daySec = (d < (int)config.daySeconds.size()) ? config.daySeconds[d] : 10;
+        for (int day = 0; day < numDays; ++day) {
+            DayInfo info = getDayInfo(day);
+
+            int totalSteps = config.daySteps[day];
+            double daySec = config.daySeconds[day];
             double budgetSec = daySec * TIME_BUDGET_RATIO;
 
-            std::cout << "Day " << d << " started searching (steps=" << totalSteps
+            std::cout << "Day " << day << " started searching (steps=" << totalSteps
                       << ", " << budgetSec << " seconds)" << std::endl;
 
             Map map = buildMap(config, info);
-            auto plans = solveDay(map, config, info, totalSteps, budgetSec, brands);
+            std::vector<std::vector<int>> plans = solveDay(map, config, info, totalSteps, budgetSec, brands);
 
-            auto validation = validatePlans(map, info.agents, plans, totalSteps);
+            ValidationResult validation = validatePlans(map, info.agents, plans, totalSteps);
             if (!validation.valid) {
                 std::cerr << "The action array is so illigal that all agents actions changed waiting as the fallback: "
                           << validation.errorMessage << std::endl;
@@ -594,13 +551,7 @@ int main() {
                 for (size_t i = 0; i < info.agents.size(); ++i) { plans.push_back({ -totalSteps }); }
             }
 
-            HttpResponse planRes = http.postJson(BASE_URL + TEAM_TOKEN, serializeActionPlan(plans).dump());
-            if (!planRes.ok()) {
-                std::cerr << "Day " << day << " failed sending actions array: " << planRes.statusCode
-                          << "\n" << planRes.body << std::endl;
-            } else {
-                std::cout << "Day " << day << " sent actions array successfully" << std::endl;
-            }
+            post_actions(plans);
         }
     } catch (const std::exception& e) {
         std::cerr << "Fatal error: " << e.what() << std::endl;
@@ -609,3 +560,5 @@ int main() {
 
     return 0;
 }
+
+#pragma endregion

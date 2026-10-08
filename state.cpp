@@ -120,7 +120,7 @@ std::vector<State> separate(
                 if (!path.empty()) actions.push_back(path);
             }
         }
-        if (actions.empty() || (double)agent.fuel / (double)state.agentMgr.fuel < fuelPerMax) actions.push_back({-1});
+        actions.push_back({-1});
 
         for (std::vector<int>& action : actions) {
             State s = state;
