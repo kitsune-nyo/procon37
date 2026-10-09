@@ -27,6 +27,7 @@ public:
     }
 
     void decideSupply(int agent) {
+        if (agents[agent].kind == AgentKind::SUPPLY) return;
         agents[agent].kind = AgentKind::SUPPLY;
         patrolNum--;
         supplyNum++;

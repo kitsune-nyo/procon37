@@ -1,6 +1,7 @@
 #include <climits>
 #include <vector>
 #include <queue>
+#include <chrono>
 
 #define BIG 99999
 
@@ -40,8 +41,8 @@ struct ReverseDijkstraResult {
 enum class Direction : int { NW = 0, NE = 1, E = 2, SE = 3, SW = 4, W = 5 };
 
 inline const int DIR_TABLE[2][6][2] = {
-    { {-1, -1}, {-1, 0}, {0, 1}, {1, 0}, {1, -1}, {0, -1}, },
-    { {-1, 0}, {-1, 1}, {0, 1}, {1, 1}, {1, 0}, {0, -1}, }
+    { {-1, 0}, {-1, 1}, {0, 1}, {1, 1}, {1, 0}, {0, -1}, },
+    { {-1, -1}, {-1, 0}, {0, 1}, {1, 0}, {1, -1}, {0, -1}, }
 };
 
 class Map {
@@ -70,6 +71,7 @@ public:
     RoadStatus roadStatAt(int idx) const { return roadStat[idx]; }
 
     int getDirection(int current, int next) {
+        if (current < 0 || current >= (int)cells.size() || next < 0 || next >= (int)cells.size()) return -1;
         int r = rowOf(current);
         int c = colOf(current);
         for (int d = 0; d < 6; d++) {
@@ -121,7 +123,9 @@ public:
         }
     }
 
-    ReverseDijkstraResult reverseDijkstra(int goal) {
+    ReverseDijkstraResult reverseDijkstra(
+        int goal, std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::max()
+    ) {
         std::vector<MoveCost> dist(width * height, {BIG, BIG});
         std::vector<int> parent(width * height, -1);
         
@@ -132,6 +136,7 @@ public:
         search.push({dist[goal], goal});
 
         while (!search.empty()) {
+            if (std::chrono::steady_clock::now() >= deadline) return {};
             MoveCost d = search.top().first;
             int current = search.top().second;
             search.pop();

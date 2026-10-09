@@ -6,14 +6,15 @@
 #define WAIT -1
 
 const double fuelPerMax = 0.3;
-const std::vector<double> evaluateWeight = {10000, 10000, 10000, 1, 100};
+const std::vector<double> evaluateWeight = {100000000, 1000000, 10000, 1, 100};
 
 class State {
 public:
     SpotManager spotMgr;
     AgentManager agentMgr;
 
-    int step = 0, score = 0;
+    int step = 0;
+    long long score = 0;
     int udonSum = 0;
     std::set<int> udonBrand;
 
@@ -37,7 +38,7 @@ public:
         }
     }
 
-    void collectUdon(std::set<int>& brands) {
+    void collectUdon() {
         for (Agent& agent: agentMgr.agents) {
             if (agent.kind == AgentKind::SUPPLY) continue;
             Spot* s = spotMgr.findAt(agent.pos);
@@ -46,7 +47,6 @@ public:
             if (canCollect) {
                 if (spotMgr.consume(s->pos)) {
                     udonSum++;
-                    brands.insert(s->brand);
                     udonBrand.insert(s->brand);
                     agent.visitedSpotPos.insert(s->pos);
                 }
@@ -56,7 +56,7 @@ public:
 };
 
 void evaluate(
-    State& state, Map& map, std::vector<ReverseDijkstraResult>& md, std::vector<ReverseDijkstraResult>& dd, std::set<int>& brands
+    State& state, Map& map, std::vector<ReverseDijkstraResult>& md, std::vector<ReverseDijkstraResult>& dd, const std::set<int>& brands
 ) {
     double agentsToNearestSpotScore = 0;
     for (Agent& agent: state.agentMgr.agents) {
@@ -77,32 +77,44 @@ void evaluate(
     fuel /= std::max(1, state.agentMgr.patrolNum);
 
     state.score = 0;
+    size_t totalBrands = brands.size();
+    for (int brand : state.udonBrand) {
+        if (brands.count(brand) == 0) ++totalBrands;
+    }
     std::vector<double> x = {
-        (double)brands.size(),
+        (double)totalBrands,
         (double)state.udonBrand.size(), 
         (double)state.udonSum,
         fuel,
         agentsToNearestSpotScore
     };
     std::vector<double> w = evaluateWeight;
-    for (int i = 0; i < x.size(); i++) state.score += w[i] * x[i];
+    for (int i = 0; i < x.size(); i++) state.score += (long long)(w[i] * x[i]);
 }
 
 std::vector<State> separate(
-    State& state, Map& map, std::vector<ReverseDijkstraResult>& md, std::vector<ReverseDijkstraResult>& dd
+    State& state, Map& map, std::vector<ReverseDijkstraResult>& md, std::vector<ReverseDijkstraResult>& dd,
+    std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::max()
 ) {
     std::vector<State> ret;
 
     for (int i = 0; i < state.agentMgr.agents.size(); i++) {
+        if (std::chrono::steady_clock::now() >= deadline) break;
         if (!state.agentMgr.agents[i].actions.empty()) continue;
         Agent& agent = state.agentMgr.agents[i];
+        // 移動が反映されてから、新しい現在地・燃料で経路を生成する。
+        if (agent.nextPos != -1) continue;
         std::vector<std::vector<int>> actions;
 
         std::vector<int> path;
         if (agent.kind == AgentKind::PATROL) {
             for (Spot& target : state.spotMgr.spots) {
-                path = map.getPath(md[target.pos].parent, agent.pos, target.pos, agent.fuel);
-                if (!path.empty()) actions.push_back(path);
+                if ((agent.visitedSpotPos.find(target.pos) != agent.visitedSpotPos.end()
+                        || agent.visitedSpotPos.size() == state.spotMgr.brands.size())
+                        && target.stock != 0) {
+                    path = map.getPath(md[target.pos].parent, agent.pos, target.pos, agent.fuel);
+                    if (!path.empty()) actions.push_back(path);
+                }
             }
             for (Agent& target : state.agentMgr.agents) {
                 if (target.kind != AgentKind::SUPPLY) continue;
@@ -123,6 +135,7 @@ std::vector<State> separate(
         actions.push_back({-1});
 
         for (std::vector<int>& action : actions) {
+            if (std::chrono::steady_clock::now() >= deadline) break;
             State s = state;
             Agent& newAgent = s.agentMgr.agents[i];
             while (!newAgent.actions.empty()) newAgent.actions.pop();
@@ -135,21 +148,14 @@ std::vector<State> separate(
     return ret;
 }
 
-bool update(State& state, Map& map, int steps, std::set<int>& brands) {
+bool update(State& state, Map& map, int steps) {
+    if (state.step >= steps) return false;
     for (Agent& agent : state.agentMgr.agents) {
-        if (agent.actions.empty()) return false;
+        if (agent.actions.empty() && agent.nextPos == -1) return false;
     }
 
     for (Agent& agent : state.agentMgr.agents) {
         if (agent.history.size() < state.step + 1) agent.history.push_back(WAIT);
-
-        if (agent.nextPos != -1 && state.step == agent.moveEndStep) {
-            if (agent.kind == AgentKind::PATROL) agent.fuel -= agent.nextFuel;
-            agent.pos = agent.nextPos;
-            agent.nextPos = -1;
-            agent.nextFuel = 0;
-            agent.moveEndStep = -1;
-        }
 
         if (agent.nextPos != -1) {
             agent.history[state.step] = INACTION;
@@ -164,6 +170,12 @@ bool update(State& state, Map& map, int steps, std::set<int>& brands) {
             continue;
         }
 
+        int direction = map.getDirection(agent.pos, nextPos);
+        if (direction == -1 || map.terrainAt(nextPos) == Terrain::POND) {
+            while (!agent.actions.empty()) agent.actions.pop();
+            continue; // history は WAIT のまま。不正な移動を提出しない。
+        }
+
         MoveCost cost = map.getMoveCost(agent.pos);
 
         if (state.step + cost.time > steps) {
@@ -171,7 +183,9 @@ bool update(State& state, Map& map, int steps, std::set<int>& brands) {
             continue;
         }
 
-        agent.history[state.step] = map.getDirection(agent.pos, nextPos);
+        if (agent.kind == AgentKind::PATROL && agent.fuel < cost.fuel) continue;
+
+        agent.history[state.step] = direction;
 
         agent.nextPos = nextPos;
         agent.nextFuel = cost.fuel;
@@ -179,9 +193,21 @@ bool update(State& state, Map& map, int steps, std::set<int>& brands) {
         agent.actions.pop();
     }
 
-    state.applySupply();
-    state.collectUdon(brands);
     state.step++;
+
+    // step は次のアクション時刻。0 はアクションのみ、steps は反映のみ。
+    // 全車の移動を反映してから、取得と補給を行う（公式 Q6）。
+    for (Agent& agent : state.agentMgr.agents) {
+        if (agent.nextPos != -1 && state.step == agent.moveEndStep) {
+            if (agent.kind == AgentKind::PATROL) agent.fuel -= agent.nextFuel;
+            agent.pos = agent.nextPos;
+            agent.nextPos = -1;
+            agent.nextFuel = 0;
+            agent.moveEndStep = -1;
+        }
+    }
+    state.collectUdon();
+    state.applySupply();
 
     return true;
 }

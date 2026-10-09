@@ -24,8 +24,10 @@
 #include <string>
 #include <stdexcept>
 #include <thread>
+#include <algorithm>
+#include <chrono>
+#include <ctime>
 #include <curl/curl.h>
-#include <nlohmann/json.hpp>
 
 #include "json.hpp"
 #include "state.cpp"
@@ -45,8 +47,9 @@ static const std::string SETTING_PATH = "/setting";
 static const std::string AGENT_PATH   = "/agent";
 static const std::string PROBLEM_PATH = "/";
 
-constexpr int    BEAM_WIDTH        = 3000; // ビーム幅の上限
-constexpr double TIME_BUDGET_RATIO = 0.65; // 1日(daySeconds)のうち探索に使ってよい割合
+constexpr int    BEAM_WIDTH        = 5000; // ビーム幅の上限
+constexpr double TIME_BUDGET_RATIO = 0.75; // 1日(daySeconds)のうち探索に使ってよい割合
+constexpr double HTTP_RESERVE_SEC = 1.0;
 
 #pragma endregion
 
@@ -174,13 +177,69 @@ inline Map buildMap(const MatchConfig& config, const DayInfo& info) {
     return map;
 }
 
+inline double remainingSeconds(long long endsAt) {
+    return endsAt - std::chrono::duration<double>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+inline double searchBudget(double nominalSec, double remainingSec) {
+    return std::max(0.0, std::min({nominalSec * TIME_BUDGET_RATIO,
+        remainingSec * TIME_BUDGET_RATIO, remainingSec - HTTP_RESERVE_SEC}));
+}
+
+inline long submissionTimeout(long long endsAt) {
+    // startsAt == 0 は開始時刻未確定（公式 MatchSetting）。期限を推測しない。
+    if (endsAt == 0) return 15000;
+    return (long)std::clamp(remainingSeconds(endsAt) * 1000.0, 1.0, 15000.0);
+}
+
+// 中断した候補は、開始済みの移動だけを完了させ、残りを待機で埋める。
+inline std::vector<std::vector<int>> finishPlans(
+    State state, Map& map, int steps, std::set<int>* acquiredBrands
+) {
+    for (Agent& agent : state.agentMgr.agents) {
+        while (!agent.actions.empty()) agent.actions.pop();
+    }
+    while (state.step < steps) {
+        for (Agent& agent : state.agentMgr.agents) {
+            if (agent.nextPos == -1) agent.actions.push(WAIT);
+        }
+        update(state, map, steps);
+    }
+    if (acquiredBrands) *acquiredBrands = state.udonBrand;
+    std::vector<std::vector<int>> plans;
+    for (Agent& agent : state.agentMgr.agents) plans.push_back(compress(agent.history));
+    return plans;
+}
+
+inline std::vector<std::vector<int>> agentKinds(int numAgents) {
+    std::vector<std::vector<int>> ret;
+    // 補給車数の既存の探索範囲を維持する。公式のエージェント数は3～8。
+    for (int i = numAgents / 3; i <= numAgents / 2; ++i) {
+        for (int j = 0; j < (1 << numAgents); ++j) {
+            std::vector<int> k;
+            int agt = 0;
+            for (int bit = numAgents - 1; bit >= 0; --bit) {
+                int kind = (j >> bit) & 1;
+                k.push_back(kind);
+                agt += kind;
+            }
+            if (agt == i) ret.push_back(k);
+        }
+    }
+    return ret;
+}
+
 // 1日分のビームサーチを実行し、エージェントごとの行動計画を返す
 inline std::vector<std::vector<int>> solveDay(
-    Map& map, const MatchConfig& config, const DayInfo& info, int steps, double budgetSec, std::set<int>& brands
+    Map& map, const MatchConfig& config, const DayInfo& info, int steps, double budgetSec,
+    const std::set<int>& brands, std::set<int>* acquiredBrands = nullptr
 ) {
     using Clock = std::chrono::steady_clock;
     auto t0 = Clock::now();
     auto elapsed = [&]() { return std::chrono::duration<double>(Clock::now() - t0).count(); };
+    auto deadline = t0 + std::chrono::duration_cast<Clock::duration>(
+        std::chrono::duration<double>(std::max(0.0, budgetSec)));
 
     // スポット
     SpotManager spotMgr;
@@ -193,29 +252,41 @@ inline std::vector<std::vector<int>> solveDay(
         agentMgr.placeAgent(info.agents[i].pos, info.agents[i].fuel);
         if (info.agents[i].kind == 1) agentMgr.decideSupply((int)i);
     }
+    State initial(spotMgr, agentMgr);
 
     // キャッシュ
     std::vector<ReverseDijkstraResult> mapDijkstra;
     mapDijkstra.reserve(map.cells.size());
-    for (int i = 0; i < (int)map.cells.size(); i++) mapDijkstra.push_back(map.reverseDijkstra(i));
+    for (int i = 0; i < (int)map.cells.size(); i++) {
+        if (Clock::now() >= deadline) return finishPlans(initial, map, steps, acquiredBrands);
+        auto result = map.reverseDijkstra(i, deadline);
+        if (result.dist.empty()) return finishPlans(initial, map, steps, acquiredBrands);
+        mapDijkstra.push_back(std::move(result));
+    }
     // dropDijkstra は現在の evaluate / separate では使われていないので空のまま渡す
     std::vector<ReverseDijkstraResult> dropDijkstra;
 
     // ビームサーチ
     size_t beamWidth = BEAM_WIDTH;
     std::priority_queue<State, std::vector<State>, std::greater<State>> states;
-    states.push(State(spotMgr, agentMgr));
+    evaluate(initial, map, mapDijkstra, dropDijkstra, brands);
+    states.push(initial);
 
     for (int s = 1; s <= steps; s++) {
+        if (Clock::now() >= deadline) break;
         double stepStart = elapsed();
         size_t processedStates = 0;
 
         while (!states.empty() && states.top().step < s) {
+            if (Clock::now() >= deadline) break;
             State state = states.top();
             states.pop();
             processedStates++;
-            std::vector<State> newStates = separate(state, map, mapDijkstra, dropDijkstra);
-            if (update(state, map, steps, brands)) states.push(state);
+            std::vector<State> newStates = separate(state, map, mapDijkstra, dropDijkstra, deadline);
+            if (update(state, map, steps)) {
+                evaluate(state, map, mapDijkstra, dropDijkstra, brands);
+                states.push(state);
+            }
             for (State& next : newStates) {
                 evaluate(next, map, mapDijkstra, dropDijkstra, brands);
                 states.push(next);
@@ -231,7 +302,7 @@ inline std::vector<std::vector<int>> solveDay(
         int remainingSteps = steps - s;
         if (remainingSteps > 0) {
             double targetSec = std::max(0.0, budgetSec - now) / remainingSteps;
-            size_t targetWidth = std::clamp<size_t>(targetSec / secPerState, 1, BEAM_WIDTH);
+            size_t targetWidth = (size_t)std::clamp(targetSec / std::max(secPerState, 1e-6), 1.0, (double)BEAM_WIDTH);
             beamWidth = std::clamp<size_t>(
                 targetWidth,
                 std::max<size_t>(1, beamWidth * 8 / 10),
@@ -240,20 +311,20 @@ inline std::vector<std::vector<int>> solveDay(
         }
     }
 
-    if (states.empty()) return {};
+    if (states.empty()) return finishPlans(initial, map, steps, acquiredBrands);
 
     // ベスト
     while (states.size() > 1) states.pop();
     State best = states.top();
 
-    std::cout << "  Searching result: brand=" << best.udonBrand.size() << " supply=" << best.agentMgr.supplyNum
+    std::cout << "  Searching result: brand=" << best.udonBrand.size()
+              << " supply=" << best.agentMgr.supplyNum
               << " udon=" << best.udonSum
               << " score=" << best.score
-              << " (searching " << elapsed() << " seconds, last beam width " << beamWidth << ")" << std::endl;
+              << " (searching " << elapsed()
+              << " seconds, last beam width " << beamWidth << ")" << std::endl;
 
-    std::vector<std::vector<int>> plans;
-    for (Agent& agent : best.agentMgr.agents) plans.push_back(compress(agent.history));
-    return plans;
+    return finishPlans(best, map, steps, acquiredBrands);
 }
 
 inline std::vector<int> agentsKind(const MatchConfig& config) {
@@ -261,11 +332,13 @@ inline std::vector<int> agentsKind(const MatchConfig& config) {
     auto t0 = Clock::now();
     auto elapsed = [&]() { return std::chrono::duration<double>(Clock::now() - t0).count(); };
 
-    int numSupply = config.agents.size() / 2;
-
     int steps = config.daySteps[0];
-    std::time_t ds = config.startsAt - std::time(nullptr);
-    double budgetSec = ds * TIME_BUDGET_RATIO;
+    double remainingSec = remainingSeconds(config.startsAt);
+    double budgetSec = searchBudget(remainingSec, remainingSec);
+    auto deadline = t0 + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(budgetSec));
+    auto kinds = agentKinds((int)config.agents.size());
+    const std::vector<int> fallback = kinds.front();
+    if (Clock::now() >= deadline) return fallback;
 
     std::cout << "Started searching agents types (steps=" << steps
                 << ", " << budgetSec << " seconds)" << std::endl;
@@ -279,7 +352,12 @@ inline std::vector<int> agentsKind(const MatchConfig& config) {
 
     std::vector<ReverseDijkstraResult> mapDijkstra;
     mapDijkstra.reserve(map.cells.size());
-    for (int i = 0; i < (int)map.cells.size(); i++) mapDijkstra.push_back(map.reverseDijkstra(i));
+    for (int i = 0; i < (int)map.cells.size(); i++) {
+        if (Clock::now() >= deadline) return fallback;
+        auto result = map.reverseDijkstra(i, deadline);
+        if (result.dist.empty()) return fallback;
+        mapDijkstra.push_back(std::move(result));
+    }
     // dropDijkstra は現在の evaluate / separate では使われていないので空のまま渡す
     std::vector<ReverseDijkstraResult> dropDijkstra;
 
@@ -289,38 +367,31 @@ inline std::vector<int> agentsKind(const MatchConfig& config) {
 
     size_t beamWidth = BEAM_WIDTH;
     std::priority_queue<State, std::vector<State>, std::greater<State>> states;
-    for (int i = config.agents.size() / 3; i <= config.agents.size() / 2; i++) {
-        for (int j = 0; j < (1 << config.agents.size()); j++) {
-            std::vector<int> k;
-            int agt = 0;
-            int num = j;
-            int check = (1 << (config.agents.size() - 1));
-            while (num != 0) {
-                if (num - check >= 0) {
-                    num -= check;
-                    k.push_back(1);
-                    agt++;
-                } else k.push_back(0);
-                check /= 2;
-            }
-            if (agt == i) {
-                for (int l = 0; l < k.size(); l++) {
-                    if (k[l] == 1) agentMgr.decideSupply(l);
-                }
-                states.push(State(spotMgr, agentMgr));
-            }
+    for (const auto& k : kinds) {
+        if (Clock::now() >= deadline) break;
+        AgentManager candidateMgr = agentMgr;
+        for (int l = 0; l < (int)k.size(); ++l) {
+            if (k[l] == 1) candidateMgr.decideSupply(l);
         }
+        State initial(spotMgr, candidateMgr);
+        evaluate(initial, map, mapDijkstra, dropDijkstra, brands);
+        states.push(initial);
     }
 
     for (int s = 1; s <= steps; s++) {
+        if (Clock::now() >= deadline) break;
         double stepStart = elapsed();
         size_t startSize = states.size();
 
         while (!states.empty() && states.top().step < s) {
+            if (Clock::now() >= deadline) break;
             State state = states.top();
             states.pop();
-            std::vector<State> newStates = separate(state, map, mapDijkstra, dropDijkstra);
-            if (update(state, map, steps, brands)) states.push(state);
+            std::vector<State> newStates = separate(state, map, mapDijkstra, dropDijkstra, deadline);
+            if (update(state, map, steps)) {
+                evaluate(state, map, mapDijkstra, dropDijkstra, brands);
+                states.push(state);
+            }
             for (State& next : newStates) {
                 evaluate(next, map, mapDijkstra, dropDijkstra, brands);
                 states.push(next);
@@ -341,15 +412,17 @@ inline std::vector<int> agentsKind(const MatchConfig& config) {
         }
     }
 
-    if (states.empty()) return {};
+    if (states.empty()) return fallback;
 
     while (states.size() > 1) states.pop();
     State best = states.top();
 
-    std::cout << "  Searching result: brand=" << best.udonBrand.size() << " supply=" << best.agentMgr.supplyNum
+    std::cout << "  Searching result: brand=" << best.udonBrand.size()
+              << " supply=" << best.agentMgr.supplyNum
               << " udon=" << best.udonSum
               << " score=" << best.score
-              << " (searching " << elapsed() << " seconds, last beam width " << beamWidth << ")" << std::endl;
+              << " (searching " << elapsed()
+              << " seconds, last beam width " << beamWidth << ")" << std::endl;
 
     std::vector<int> ret;
     for (auto& i : best.agentMgr.agents) ret.push_back(i.kind == AgentKind::SUPPLY ? 1 : 0);
@@ -400,7 +473,7 @@ json get(const std::string& path) {
     return json::parse(text);
 }
 
-std::string post_json(const json& body_json, const std::string& url, long timeout_sec = 15) {
+std::string post_json(const json& body_json, const std::string& url, long timeout_ms = 15000) {
     CURL* curl = curl_easy_init();
     if (!curl) throw std::runtime_error("curl_easy_init failed");
 
@@ -413,7 +486,8 @@ std::string post_json(const json& body_json, const std::string& url, long timeou
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_POST, 1L);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout_sec);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, std::max(1L, timeout_ms));
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, std::min(5000L, std::max(1L, timeout_ms)));
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body.c_str());
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
@@ -431,12 +505,15 @@ std::string post_json(const json& body_json, const std::string& url, long timeou
     return resp;
 }
 
-std::string post_agent_types(const std::vector<int>& types, long timeout_sec = 15) {
-    return post_json(json(types), BASE_URL + AGENT_PATH + TEAM_TOKEN, timeout_sec);
+std::string post_agent_types(const std::vector<int>& types, long timeout_ms = 15000) {
+    return post_json(json(types), BASE_URL + AGENT_PATH + TEAM_TOKEN, timeout_ms);
 }
 
-std::string post_actions(const std::vector<std::vector<int>>& plans, long timeout_sec = 15) {
-    return post_json(json(plans), BASE_URL + PROBLEM_PATH + TEAM_TOKEN, timeout_sec);
+std::string post_actions(const std::vector<std::vector<int>>& plans, long timeout_ms = 15000) {
+    std::string resp = post_json(json(plans), BASE_URL + PROBLEM_PATH + TEAM_TOKEN, timeout_ms);
+    // 公式 API の ActionAccepted は HTTP 200 でも revision < 0 なら不受理。
+    if (json::parse(resp).at("revision").get<int>() < 0) throw std::runtime_error("Action plan rejected: " + resp);
+    return resp;
 }
 
 #pragma endregion
@@ -473,7 +550,7 @@ int main() {
         MatchConfig config = problem.get<MatchConfig>();
 
         std::vector<int> agentTypes = agentsKind(config);
-        post_agent_types(agentTypes);
+        post_agent_types(agentTypes, submissionTimeout(config.startsAt));
 
         std::set<int> brands;
         int numDays = (int)config.daySteps.size();
@@ -483,15 +560,21 @@ int main() {
 
             int totalSteps = config.daySteps[day];
             double daySec = config.daySeconds[day];
-            double budgetSec = daySec * TIME_BUDGET_RATIO;
+            double budgetSec = searchBudget(daySec, remainingSeconds(info.endsAt));
+            auto searchStart = std::chrono::steady_clock::now();
 
             std::cout << "Day " << day << " started searching (steps=" << totalSteps
                       << ", " << budgetSec << " seconds)" << std::endl;
 
             Map map = buildMap(config, info);
-            std::vector<std::vector<int>> plans = solveDay(map, config, info, totalSteps, budgetSec, brands);
+            budgetSec = std::max(0.0, budgetSec - std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - searchStart).count());
+            std::set<int> acquiredBrands;
+            std::vector<std::vector<int>> plans = solveDay(map, config, info, totalSteps, budgetSec, brands, &acquiredBrands);
 
-            post_actions(plans);
+            post_actions(plans, submissionTimeout(info.endsAt));
+            // 公式の日次情報には取得ブランドがないため、受理された計画の再現結果を引き継ぐ。
+            brands.insert(acquiredBrands.begin(), acquiredBrands.end());
         }
     } catch (const std::exception& e) {
         std::cerr << "Fatal error: " << e.what() << std::endl;
