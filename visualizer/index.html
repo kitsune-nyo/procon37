@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="ja">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ヘキサうどん | 行動リプレイ</title><link rel="stylesheet" href="style.css"></head>
+<body>
+<header><div><span class="eyebrow">HEXUDON / DAILY REPLAY</span><h1>車両の動きを、1日ずつ。</h1></div><div class="files"><select id="file" aria-label="記録ファイル"></select><button id="refresh">履歴を更新</button><label class="button">ファイルを開く<input id="upload" type="file" accept=".json,.jsonl" hidden></label></div></header>
+<div id="message" role="status"></div>
+<main>
+<section class="workspace">
+<div class="toolbar"><div><label>表示日 <select id="day" aria-label="表示日"></select></label><span id="accept" class="pill"></span></div><label><input type="checkbox" id="routes" checked> 移動経路</label><label><input type="checkbox" id="positions"> 地点番号</label></div>
+<div class="map-container"><svg id="map" role="img" aria-label="車両と移動経路を表示する六角形の盤面"></svg><div id="map-tip">マスにカーソルを合わせると地点情報を表示</div></div>
+<div class="legend"><span><i style="background:#263d36"></i>平地</span><span><i style="background:#566274"></i>道路</span><span><i style="background:#66543a"></i>山</span><span><i style="background:#193e61"></i>池</span><span>◇ うどん店</span><span>○ 巡回車 / □ 補給車</span><span>点線: この時刻より先の経路</span></div>
+<div class="transport"><button id="prev" title="前のステップ">←</button><button id="play">▶ 再生</button><button id="next" title="次のステップ">→</button><strong id="time">STEP 0 / 0</strong><select id="speed" aria-label="再生速度"><option value="700">ゆっくり</option><option value="300" selected>標準</option><option value="100">速い</option></select><input id="step" type="range" min="0" max="0" value="0" aria-label="ステップ"></div>
+<div id="verification" class="note"></div>
+<div class="section-title"><h2>車両ごとの状態</h2><span>車両を選択すると経路と履歴を絞り込み</span></div><div id="agents" class="agents"></div>
+<details><summary>送信した行動列を確認</summary><pre id="plans"></pre></details>
+</section>
+<aside><div class="section-title"><h2>行動履歴</h2><button id="all">全車両</button></div><div id="selected" class="selected">全車両を表示</div><div class="event-controls"><select id="event-type" aria-label="行動種別"><option value="">すべての行動</option value="supply">補給・合流</option><option value="move">移動・到着</option><option value="wait">待機</option><option value="collect">うどん取得</option></select><label><input id="future" type="checkbox" checked> 1日分すべて</label></div><div id="events" class="events"></div><p class="note">行をクリックしてその時刻へ。← / → で1ステップ、Spaceで再生・停止。</p></aside>
+</main>
+<footer>行動・補給・取得は送信計画を再現した予測です。移動中の位置は出発地点として扱い、燃料は到着時に消費します。翌日の観測がある場合は日末の位置・燃料を照合します。</footer>
+<script src="app.js"></script>
+</body></html>

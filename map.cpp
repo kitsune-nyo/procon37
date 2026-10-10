@@ -24,11 +24,11 @@ public:
     bool operator!=(const MoveCost& r) const { return !((time == r.time) && (fuel == r.fuel)); }
     bool operator>(const MoveCost& r) const {
         if (time != r.time) return time > r.time;
-        return fuel < r.fuel;
+        return fuel > r.fuel; // 同じ時間なら燃料が少ない方を「小さい」とする
     }
     bool operator<(const MoveCost& r) const {
         if (time != r.time) return time < r.time;
-        return fuel > r.fuel;
+        return fuel < r.fuel;
     }
     MoveCost operator+(const MoveCost& r) const { return {time + r.time, fuel + r.fuel}; }
 };
@@ -157,7 +157,7 @@ public:
         return {dist, parent};
     }
 
-    std::vector<int> getPath(std::vector<int>& v, int start, int goal, int fuel) {
+    std::vector<int> getPath(const std::vector<int>& v, int start, int goal, int fuel) {
         std::vector<int> ret;
 
         int current = start;
@@ -188,7 +188,7 @@ public:
         return ret;
     }
 
-    std::vector<int> getHalfPath(std::vector<int>& v, int start, int goal, int fuel) {
+    std::vector<int> getHalfPath(const std::vector<int>& v, int start, int goal, int fuel) {
         std::vector<int> ret;
         
         std::vector<int> path = getPath(v, start, goal, fuel);
